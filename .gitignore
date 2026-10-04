@@ -218,3 +218,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+### Secrets — 절대 커밋 금지 ###
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+### AI 모델 가중치 (용량 큼 → S3에 보관) ###
+*.pt
+*.pth
+*.bin
+*.onnx
+*.safetensors
+*.ckpt
+*.h5
+
+### IDE ###
+.idea/
+.vscode/
+
+### OS ###
+.DS_Store
+Thumbs.db
