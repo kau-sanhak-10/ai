@@ -242,3 +242,6 @@ __marimo__/
 ### OS ###
 .DS_Store
 Thumbs.db
+
+# Local LLM request audit files
+results/
