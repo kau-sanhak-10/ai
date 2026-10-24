@@ -20,10 +20,9 @@ from app.llm.schemas import BoilerExtraction
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 LOG_PATH = BASE_DIR / "results" / "gemini_multimodal_calls.csv"
-MAX_IMAGE_BYTES = 8 * 1024 * 1024  # 예제 자체에서 설정한 제한(8 MiB)
+MAX_IMAGE_BYTES = 10_000_000  # 승인 정책: 장당 10MB. 문의당 10장은 업로드 서버에서 검사
 MAX_IMAGE_PIXELS = 20_000_000  # 예제 자체에서 설정한 제한
-REQUIRED_FIELDS = ("manufacturer", "model_name", "symptom", "address")
-EXTRACT_FIELDS = (*REQUIRED_FIELDS, "error_code")
+EXTRACT_FIELDS = ("manufacturer", "model_name", "symptom", "address", "error_code")
 LOG_FIELDS = (
     "timestamp",
     "request_id",
@@ -67,7 +66,7 @@ def read_image(path: Path) -> tuple[bytes, str]:
     if not path.is_file():
         raise ValueError("지정한 이미지 파일을 찾을 수 없습니다.")
     if path.stat().st_size > MAX_IMAGE_BYTES:
-        raise ValueError("이미지가 8 MiB를 초과합니다. 작은 이미지를 사용하세요.")
+        raise ValueError("이미지가 10MB를 초과합니다. 작은 이미지를 사용하세요.")
     image_data = path.read_bytes()
     try:
         with Image.open(io.BytesIO(image_data)) as image:
@@ -137,9 +136,12 @@ def make_output(
     request_id: str,
     has_image: bool,
     usage: dict,
+    required_fields: tuple[str, ...] = (),
 ) -> dict:
-    """추출 결과에 제공사·요청 ID·검토 필요 여부·사용량을 덧붙인다."""
-    missing_fields = [field for field in REQUIRED_FIELDS if getattr(extracted, field) is None]
+    """추출 결과를 반환한다. 업무 필수정보와 예약·이관 판단은 서버 규칙이 정한다."""
+    if any(field not in EXTRACT_FIELDS for field in required_fields):
+        raise ValueError("지원하지 않는 추출 항목이 필수정보에 포함됐습니다.")
+    missing_fields = [field for field in required_fields if getattr(extracted, field) is None]
     return {
         "request_id": request_id,
         "provider": "gemini",
@@ -147,6 +149,10 @@ def make_output(
         "image_attached": has_image,
         "extraction": extracted.model_dump(mode="json"),
         "missing_fields": missing_fields,
+        "unobserved_fields": [
+            field for field in EXTRACT_FIELDS if getattr(extracted, field) is None
+        ],
+        # 추출 검토 신호이며 사장님 이관·예약 차단 여부가 아니다.
         "needs_review": bool(missing_fields or extracted.uncertainties),
         "usage": usage,
     }
