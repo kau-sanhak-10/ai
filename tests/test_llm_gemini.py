@@ -38,13 +38,28 @@ def test_json_schema_accepts_null_and_evidence():
 
 
 def test_evidence_keeps_observed_values():
-    """근거가 있는 값은 유지하고 누락 필드는 검토 대상으로 표시하는지 검사한다."""
+    """추출하지 못한 주소를 업무 필수정보 부족으로 단정하지 않는다."""
     parsed = verify_evidence(sample_extraction(), "경동나비엔 보일러, 난방이 안 돼요", True)
     assert parsed.model_name == "NCB562"
     assert parsed.error_code == "03"
     result = make_output(parsed, "test-model", "req-1", True, {})
-    assert result["missing_fields"] == ["address"]
+    assert result["missing_fields"] == []
+    assert result["unobserved_fields"] == ["address"]
+    assert result["needs_review"] is False
+
+
+def test_only_explicit_business_requirements_are_required():
+    parsed = sample_extraction()
+    parsed.manufacturer = None
+    parsed.model_name = None
+    result = make_output(parsed, "test-model", "req-1", False, {})
+    assert result["missing_fields"] == []
+    assert result["needs_review"] is False
+    result = make_output(parsed, "test-model", "req-1", False, {}, ("model_name",))
+    assert result["missing_fields"] == ["model_name"]
     assert result["needs_review"] is True
+    with pytest.raises(ValueError):
+        make_output(parsed, "test-model", "req-1", False, {}, ("unknown_field",))
 
 
 def test_without_image_clears_image_only_values():
