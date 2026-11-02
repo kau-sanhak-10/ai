@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None
     jev_api_key: SecretStr | None = None
 
+    # Spring → AI 전용 내부 접근 키. 프로덕션에서 반드시 설정.
+    internal_key: SecretStr | None = None
+    # 실제 접근 가능한 직접 API 모델을 명시적으로 설정한다. Bedrock 모델/리전은 별도 검증.
+    openai_model: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

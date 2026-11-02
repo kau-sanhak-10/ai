@@ -1,7 +1,8 @@
 # 일로 AI 서버
 
 고객 대화·사진에서 접수정보를 추출하고, 문의 상황을 판단(Jev·범용 LLM·자체 모델 비교)하는 FastAPI 서버입니다.
-현재는 개발 환경, 공통 응답·오류 처리, 헬스체크만 준비되어 있습니다. 대화·Vision·판단 기능은 아직 구현되지 않았습니다.
+공통 응답·오류 처리, 헬스체크와 내부 문의 분석 LangGraph 경로(DS-05)가 포함됩니다.
+외부 이미지 방식 비교·매뉴얼 인덱스·예약 확정은 별도 작업입니다.
 
 ## 시작하기
 
@@ -77,3 +78,14 @@ uv run pytest           # 테스트
 - 커밋은 `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`, `test:` 유형을 사용합니다.
 - `develop` 대상으로 PR을 열고 리뷰 1명 승인 후 Squash and merge 합니다.
 - `.env`, API 키, 고객 개인정보·사진은 커밋하지 않습니다.
+
+## DS-05 내부 문의 분석
+
+- 경로: `POST /internal/v1/inquiries/analyze` (Spring 전용 `X-Internal-Key` 필수)
+- `.env`: `INTERNAL_KEY`, `OPENAI_API_KEY`, `OPENAI_MODEL` 설정 후 서비스 호출 가능
+- **실제 모델 접근 권한이나 키가 없으면 502 `AI_MODEL_ERROR`** (가짜 판단을 반환하지 않음)
+- 구조/Graph/Mock 테스트: `tests/test_intake_*.py`
+- 상세 설계, 책임 경계, 미구현 항목: [`docs/DS05_intake_graph.md`](docs/DS05_intake_graph.md)
+
+Spring은 분석 결과를 적용하기 전에 입력 버전·응대 주체를 재확인하고, 프론트와 Spring만
+예약 가능시간 조회·선택·확정 API를 처리합니다. AI 서버는 예약을 생성하지 않습니다.
