@@ -7,10 +7,12 @@ import pytest
 from app.intake.contracts import (
     AnalyzeResult,
     CategoryDecision,
+    Photo,
     RawObservation,
     Understanding,
 )
 from simulate_ilro_multiturn import DEFAULT_TURNS, SimulatedSpring, run_simulation
+from tests.test_intake_graph import FakeProvider, run, symptom
 
 
 def test_multiturn_spring_snapshots_are_forwarded_correctly():
@@ -21,12 +23,16 @@ def test_multiturn_spring_snapshots_are_forwarded_correctly():
     assert [t["request_sent_to_ai"]["inquiryId"] for t in traces] == [101, 101, 101]
     assert [len(t["request_sent_to_ai"]["messages"]) for t in traces] == [1, 3, 5]
     assert traces[0]["request_sent_to_ai"]["askCounts"] == {}
-    assert traces[1]["request_sent_to_ai"]["askCounts"] == {"symptom": 1}
+    assert traces[1]["request_sent_to_ai"]["askCounts"] == {"symptom": 0}
     assert traces[2]["request_sent_to_ai"]["askCounts"] == {
-        "symptom": 1,
-        "work_category": 1,
+        "symptom": 0,
+        "work_category": 0,
     }
-    assert traces[1]["request_sent_to_ai"]["fields"] == []
+    pending_symptom = traces[1]["request_sent_to_ai"]["fields"][0]
+    assert pending_symptom["fieldKey"] == "symptom"
+    assert pending_symptom["status"] == "UNCONFIRMED"
+    assert pending_symptom["unconfirmedReason"] == "NOT_PROVIDED"
+    assert traces[1]["result"]["conflicts"] == []
     assert any(
         f["fieldKey"] == "symptom" and f["value"] == "온수가 안 나와요"
         for f in traces[2]["request_sent_to_ai"]["fields"]
@@ -109,7 +115,7 @@ def test_reextracting_previous_message_does_not_reask_confirmed_symptom(reextrac
     assert first["result"]["nextAction"]["targetFieldKeys"] == ["work_category"]
     assert second["result"]["conflicts"] == []
     assert second["result"]["nextAction"]["action"] == "CHECK_SCHEDULE"
-    assert second["spring_after_ai_result"]["askCounts"] == {"work_category": 1}
+    assert second["spring_after_ai_result"]["askCounts"] == {"work_category": 0}
     assert second["spring_after_ai_result"]["fields"]["symptom"]["value"] == "온수가 안나와요"
     assert provider.extract_message.call_count == 2
 
@@ -143,3 +149,36 @@ def test_changed_symptom_in_new_message_still_requires_confirmation():
     assert result["conflicts"][0]["fieldKey"] == "symptom"
     assert result["nextAction"]["targetFieldKeys"] == ["symptom"]
     assert result["nextAction"]["action"] == "ASK_MORE_INFO"
+
+
+@pytest.mark.parametrize("guard", ["current", "stale", "owner", "duplicate"])
+def test_photo_history_is_applied_only_with_an_accepted_result(guard):
+    db = SimulatedSpring(processed_photo_ids={12})
+    latest = db.add_customer_message("온수가 안 나와요. 수리받고 싶어요.")
+    req = db.make_request()
+    req.photos = [
+        Photo(
+            photoId=56,
+            messageId=latest.messageId,
+            imageUrl="https://example.org/photo.jpg",
+        )
+    ]
+    fact = {**symptom(), "evidence": {"messageId": latest.messageId}}
+    result = run(req, FakeProvider(text_facts=[fact]))
+    assert result.analyzedPhotoIds == [56]
+    if guard == "stale":
+        db.add_customer_message("정보 추가")
+    elif guard == "owner":
+        db.handler_mode = "OWNER"
+    elif guard == "duplicate":
+        assert db.apply_result(result) == "APPLIED"
+    before = db.snapshot()
+    status = db.apply_result(result)
+    if guard == "current":
+        assert status == "APPLIED"
+        assert db.processed_photo_ids == {12, 56}
+        assert db.make_request().processedPhotoIds == [12, 56]
+    else:
+        assert status == ("DUPLICATE" if guard == "duplicate" else "STALE")
+        assert db.snapshot() == before
+        assert db.processed_photo_ids == ({12, 56} if guard == "duplicate" else {12})

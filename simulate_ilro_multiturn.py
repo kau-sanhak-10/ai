@@ -107,10 +107,8 @@ class SimulatedSpring:
     messages: list[Message] = field(default_factory=list)
     safety_flag: bool = False
     applied_request_ids: set[str] = field(default_factory=set)
+    processed_photo_ids: set[int] = field(default_factory=set)
     next_message_id: int = 900
-    # 요구사항 미확인 필드를 'CONFIRMED'로 너무 일찍 DB에 적용하지 않는다는 시뮬레이터 가정.
-    # Spring의 실제 적용 정책은 팀과 합의해야 한다. False로 바꾸면 이 가정 없이 실험 가능.
-    defer_asked_field: bool = True
 
     def add_customer_message(self, content: str) -> Message:
         self.next_message_id += 1
@@ -142,6 +140,7 @@ class SimulatedSpring:
                 "askCounts": dict(self.ask_counts),
                 "messages": [m.model_dump() for m in self.messages],
                 "photos": [],
+                "processedPhotoIds": sorted(self.processed_photo_ids),
             }
         )
 
@@ -154,6 +153,7 @@ class SimulatedSpring:
             "askCounts": dict(self.ask_counts),
             "messages": [to_jsonable_python(m) for m in self.messages],
             "safetyFlag": self.safety_flag,
+            "processedPhotoIds": sorted(self.processed_photo_ids),
         }
 
     def apply_result(self, result: AnalyzeResult) -> str:
@@ -169,24 +169,12 @@ class SimulatedSpring:
             return "DUPLICATE"
 
         # 기존 사장님 확정값을 AI가 변경하지 않는다.
-        # 질문 대상은 아직 해소되지 않았으므로 모의 DB에서는 확정 적용을 잠시 보류한다.
-        asked_fields = (
-            set(result.nextAction.targetFieldKeys)
-            if result.nextAction.action == "ASK_MORE_INFO"
-            else set()
-        )
         conflict_keys = {item.fieldKey for item in result.conflicts}
         for fact in result.facts:
             existing = self.fields.get(fact.fieldKey)
             if existing is not None and existing.source == "OWNER":
                 continue
             if fact.fieldKey in conflict_keys and fact.status == "CONFIRMED":
-                continue
-            if (
-                self.defer_asked_field
-                and fact.fieldKey in asked_fields
-                and fact.status == "CONFIRMED"
-            ):
                 continue
             self.fields[fact.fieldKey] = ExistingField(
                 fieldKey=fact.fieldKey,
@@ -200,6 +188,8 @@ class SimulatedSpring:
 
         self.safety_flag = self.safety_flag or result.safety.flag
         self.applied_request_ids.add(result.requestId)
+        # 현재 버전·AI 응대·중복 검증을 통과한 결과와 함께 처리 이력을 반영한다.
+        self.processed_photo_ids.update(result.analyzedPhotoIds)
 
         # AI 답변 저장은 고객 입력이 아니므로 inputVersion을 증가시키지 않는다.
         self.next_message_id += 1
@@ -211,9 +201,10 @@ class SimulatedSpring:
                 createdAt=datetime.now(UTC).isoformat(),
             )
         )
-        if result.nextAction.action == "ASK_MORE_INFO":
+        if result.nextAction.action in {"ASK_MORE_INFO", "REQUEST_IMAGE"}:
             for key in result.nextAction.targetFieldKeys:
-                self.ask_counts[key] = self.ask_counts.get(key, 0) + 1
+                # 최초 질문은 0회, 이후 문자/사진 보완 요청부터 같은 항목에서 합산한다.
+                self.ask_counts[key] = self.ask_counts.get(key, -1) + 1
         return "APPLIED"
 
 
@@ -271,7 +262,6 @@ def run_simulation(
     *,
     model: str = "gemini-3.5-flash-lite",
     turns: Iterable[str] | None = None,
-    defer_asked_field: bool = True,
     check_stale: bool = True,
 ) -> dict[str, Any]:
     if mode not in {"mock", "gemini"}:
@@ -280,7 +270,7 @@ def run_simulation(
     if mode == "mock" and messages != DEFAULT_TURNS:
         raise ValueError("Mock은 고정 3턴 시나리오 전용입니다. 자유 입력은 --mode gemini")
 
-    db = SimulatedSpring(defer_asked_field=defer_asked_field)
+    db = SimulatedSpring()
     traces = []
     checks = []
     first_result: AnalyzeResult | None = None
@@ -368,7 +358,6 @@ def run_simulation(
     return {
         "simulation": "Spring 메모리 모사; 실제 DB/예약 API를 호출하지 않음",
         "mode": mode,
-        "defer_asked_field": defer_asked_field,
         "traces": traces,
         "checks": checks,
         "all_passed": ok,
@@ -392,11 +381,6 @@ def main() -> None:
     parser.add_argument("--turn", action="append", help="Gemini 전용: 반복 지정한 고객 발화")
     parser.add_argument("--interactive", action="store_true", help="Gemini 전용: 직접 발화 입력")
     parser.add_argument("--save", type=Path, help="상세 State 기록을 JSON으로 저장")
-    parser.add_argument(
-        "--persist-asked-field",
-        action="store_true",
-        help="실험용: 추가질문 대상도 즉시 CONFIRMED로 저장하여 충돌 위험 재현",
-    )
     args = parser.parse_args()
     if args.mode == "mock" and (args.turn or args.interactive):
         parser.error("Mock에서는 예문 3개가 고정입니다. 자유 입력은 --mode gemini")
@@ -411,7 +395,6 @@ def main() -> None:
         mode=args.mode,
         model=args.model,
         turns=texts,
-        defer_asked_field=not args.persist_asked_field,
     )
     if args.save:
         args.save.parent.mkdir(parents=True, exist_ok=True)

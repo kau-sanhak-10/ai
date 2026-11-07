@@ -1,7 +1,9 @@
-"""API 비용 없이 문자 근거·사진 입력·형식 오류 재시도를 검증한다."""
+"""API 비용 없이 문자 근거·사진 입력·형식 오류 시 재시도 차단을 검증한다."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from app.intake.contracts import Message, Photo
 from app.intake.providers import (
@@ -49,24 +51,20 @@ def test_photo_observation_uses_photo_id_only():
     assert result.observations[1].value is None
 
 
-def test_structured_output_none_retries_once():
+def test_structured_output_none_does_not_retry_and_keeps_usage():
     import sys
 
     client = MagicMock()
     client.__enter__.return_value = client
-    client.responses.parse.side_effect = [
-        SimpleNamespace(output_parsed=None),
-        SimpleNamespace(
-            output_parsed=ModelOutput(values=[]),
-            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
-        ),
-    ]
+    client.responses.parse.return_value = SimpleNamespace(
+        output_parsed=None, usage=SimpleNamespace(input_tokens=10, output_tokens=5)
+    )
     provider = OpenAIExtractionProvider("unit-test-only", "unit-test-model")
-    with patch.dict(
-        sys.modules, {"openai": SimpleNamespace(OpenAI=MagicMock(return_value=client))}
+    with (
+        patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=MagicMock(return_value=client))}),
+        pytest.raises(ValueError, match="구조화 출력"),
     ):
-        result = provider._parse("only example", [{"type": "input_text", "text": "sample"}])
-    assert result.values == []
-    assert client.responses.parse.call_count == 2
+        provider._parse("only example", [{"type": "input_text", "text": "sample"}])
+    assert client.responses.parse.call_count == 1
     assert provider.input_tokens == 10
     assert provider.output_tokens == 5

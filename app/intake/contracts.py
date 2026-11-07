@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 FieldKey = Literal["manufacturer", "model", "boiler_type", "error_code", "symptom"]
 Source = Literal["CUSTOMER", "PHOTO"]
@@ -47,6 +47,13 @@ class Message(ContractModel):
     content: str
     createdAt: str
 
+    @field_validator("content")
+    @classmethod
+    def ensure_nonblank_content(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("메시지 내용은 비어 있을 수 없습니다")
+        return value
+
 
 class Photo(ContractModel):
     photoId: int = Field(gt=0)
@@ -62,13 +69,19 @@ class AnalyzeRequest(ContractModel):
     handlerMode: Literal["AI", "OWNER"]
     business: Business
     fields: list[ExistingField]
-    askCounts: dict[str, int]
+    askCounts: dict[str, int] = Field(description="최초 질문을 제외한 항목별 보완 요청 횟수")
     messages: list[Message]
     photos: list[Photo]
     safetyFlag: bool
+    # Spring이 성공한 결과를 저장한 뒤 다음 요청에 보내는 처리 이력.
+    processedPhotoIds: list[int] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def ensure_request_consistency(self):
+        if any(photo_id <= 0 for photo_id in self.processedPhotoIds):
+            raise ValueError("처리한 사진 ID는 양수여야 합니다")
+        if len(set(self.processedPhotoIds)) != len(self.processedPhotoIds):
+            raise ValueError("처리한 사진 ID가 중복되었습니다")
         if any(count < 0 for count in self.askCounts.values()):
             raise ValueError("질문 횟수는 음수가 될 수 없습니다")
         if len({msg.messageId for msg in self.messages}) != len(self.messages):
@@ -156,6 +169,11 @@ class Usage(ContractModel):
     outputTokens: int = Field(ge=0)
 
 
+class IntentEvidence(ContractModel):
+    messageId: int = Field(gt=0)
+    observedText: str = Field(min_length=1)
+
+
 class AnalyzeResult(ContractModel):
     requestId: str
     inquiryId: int
@@ -171,6 +189,8 @@ class AnalyzeResult(ContractModel):
     workCategory: CategoryDecision
     safety: Safety
     intent: str
+    intentEvidence: IntentEvidence | None = None
+    analyzedPhotoIds: list[int] = Field(default_factory=list)
     nextAction: NextAction
     reply: Reply
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -185,11 +205,14 @@ class RawObservation(ContractModel):
     evidence: Evidence
     unconfirmedReason: UnconfirmedReason | None = None
     observedText: str | None = None
+    # 서비스 응답이 아닌 모델 후보의 내부 속성. 최신 고객 원문과 함께 검증한다.
+    isCorrection: bool = False
 
 
 class Understanding(ContractModel):
     observations: list[RawObservation] = Field(default_factory=list)
     intent: Literal["ANSWER", "ASK_OWNER", "CALLBACK", "BOOK", "OTHER"] = "OTHER"
+    intentEvidence: IntentEvidence | None = None
     workCategory: CategoryDecision = Field(
         default_factory=lambda: CategoryDecision(value=None, status="UNCONFIRMED")
     )

@@ -10,10 +10,11 @@ from __future__ import annotations
 import operator
 import re
 from collections.abc import Callable
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from app.intake.context import PROMPT_VERSION, is_explicit_correction
 from app.intake.contracts import (
     AnalyzeRequest,
     AnalyzeResult,
@@ -22,17 +23,20 @@ from app.intake.contracts import (
     ConflictCandidate,
     Evidence,
     Fact,
+    IntentEvidence,
     Interpretation,
     ManualHit,
     NextAction,
     RawObservation,
     Reply,
     Safety,
+    Understanding,
     Usage,
 )
-from app.intake.intent_rules import normalize_customer_intent
-from app.intake.providers import ExtractionProvider
+from app.intake.intent_rules import intent_evidence_supports, normalize_customer_intent
+from app.intake.providers import AsyncExtractionProvider, ExtractionProvider
 from app.intake.rules import IntakeRules
+from app.intake.symptom_rules import is_specific_symptom
 
 
 class IntakeState(TypedDict, total=False):
@@ -40,6 +44,8 @@ class IntakeState(TypedDict, total=False):
     stage: str
     observations: Annotated[list[RawObservation], operator.add]
     intent: str
+    intentEvidence: IntentEvidence | None
+    analyzedPhotoIds: list[int]
     workCategory: CategoryDecision
     safety: Safety
     facts: list[Fact]
@@ -64,11 +70,15 @@ def effective_fields(state: IntakeState) -> dict[str, str]:
     result = {
         field.fieldKey: field.value
         for field in state["request"].fields
-        if field.status == "CONFIRMED" and field.value is not None
+        if field.status == "CONFIRMED"
+        and field.value is not None
+        and (field.fieldKey != "symptom" or is_specific_symptom(field.value))
     }
     owners = {f.fieldKey for f in state["request"].fields if f.source == "OWNER"}
     conflicted = {conflict.fieldKey for conflict in state.get("conflicts", [])}
     for fact in state.get("facts", []):
+        if fact.fieldKey not in owners and fact.status == "UNCONFIRMED":
+            result.pop(fact.fieldKey, None)
         if (
             fact.fieldKey not in owners
             and fact.fieldKey not in conflicted
@@ -86,10 +96,11 @@ def build_workflow(
     rules: IntakeRules,
     *,
     manual_search: ManualSearch = no_manual_results,
+    asynchronous: bool = False,
 ):
     """요청별 의존성만 주입한다. checkpointer, 예약·이관 실행 도구는 사용하지 않는다."""
 
-    def extract_message(state: IntakeState) -> dict:
+    def message_update(state: IntakeState, raw: Understanding) -> dict:
         customer_messages = [m for m in state["request"].messages if m.sender == "CUSTOMER"]
         if not customer_messages:
             return {
@@ -99,16 +110,25 @@ def build_workflow(
                 "workCategory": CategoryDecision(value=None, status="UNCONFIRMED"),
                 "safety": Safety(flag=state["request"].safetyFlag, reasons=[]),
             }
-        # 이전 customer 발화도 함께 보고 정보를 재구성한다. 결과는 Spring DB와 병합한다.
-        raw = provider.extract_message(customer_messages)
+        latest = customer_messages[-1]
+        intent = normalize_customer_intent(
+            raw.intent,
+            latest.content,
+            has_observations=bool(raw.observations),
+            evidence=raw.intentEvidence,
+            message_id=latest.messageId,
+        )
         return {
             "stage": "EXTRACT",
             "observations": raw.observations,
-            "intent": normalize_customer_intent(
-                raw.intent,
-                customer_messages[-1].content,
-                has_observations=bool(raw.observations),
-            ),
+            "intent": intent,
+            "intentEvidence": raw.intentEvidence
+            if intent in {"ASK_OWNER", "CALLBACK"}
+            and raw.intent == intent
+            and intent_evidence_supports(
+                intent, raw.intentEvidence, latest.content, latest.messageId
+            )
+            else None,
             "workCategory": raw.workCategory,
             "safety": Safety(
                 flag=state["request"].safetyFlag or raw.safety.flag,
@@ -116,15 +136,38 @@ def build_workflow(
             ),
         }
 
-    def needs_image(state: IntakeState) -> str:
-        return "analyze_image" if state["request"].photos else "merge_facts"
+    def extract_message(state: IntakeState) -> dict:
+        messages = [m for m in state["request"].messages if m.sender == "CUSTOMER"]
+        if messages and callable(getattr(type(provider), "extract_request", None)):
+            raw = provider.extract_request(state["request"])
+        else:
+            raw = provider.extract_message(messages) if messages else Understanding()
+        return message_update(state, raw)
 
-    def analyze_image(state: IntakeState) -> dict:
+    async def aextract_message(state: IntakeState) -> dict:
+        messages = [m for m in state["request"].messages if m.sender == "CUSTOMER"]
+        if messages and callable(getattr(type(provider), "aextract_request", None)):
+            raw = await provider.aextract_request(state["request"])
+        else:
+            raw = (
+                await cast(AsyncExtractionProvider, provider).aextract_message(messages)
+                if messages
+                else Understanding()
+            )
+        return message_update(state, raw)
+
+    def pending_photos(state: IntakeState):
+        processed = set(state["request"].processedPhotoIds)
+        return [photo for photo in state["request"].photos if photo.photoId not in processed]
+
+    def needs_image(state: IntakeState) -> str:
+        return "analyze_image" if pending_photos(state) else "merge_facts"
+
+    def image_update(state: IntakeState, outputs: list[tuple[int, Understanding]]) -> dict:
         observations = []
         safety_reasons = list(state["safety"].reasons)
         has_safety = state["safety"].flag
-        for photo in state["request"].photos:
-            raw = provider.analyze_image(photo)
+        for _, raw in outputs:
             observations.extend(raw.observations)
             if raw.safety.flag:
                 has_safety = True
@@ -132,8 +175,22 @@ def build_workflow(
         return {
             "stage": "EXTRACT",
             "observations": observations,
+            "analyzedPhotoIds": [photo_id for photo_id, _ in outputs],
             "safety": Safety(flag=has_safety, reasons=list(dict.fromkeys(safety_reasons))),
         }
+
+    def analyze_image(state: IntakeState) -> dict:
+        return image_update(
+            state,
+            [(photo.photoId, provider.analyze_image(photo)) for photo in pending_photos(state)],
+        )
+
+    async def aanalyze_image(state: IntakeState) -> dict:
+        outputs = []
+        for photo in pending_photos(state):
+            raw = await cast(AsyncExtractionProvider, provider).aanalyze_image(photo)
+            outputs.append((photo.photoId, raw))
+        return image_update(state, outputs)
 
     def merge_facts(state: IntakeState) -> dict:
         originals = {field.fieldKey: field for field in state["request"].fields}
@@ -142,10 +199,55 @@ def build_workflow(
             groups.setdefault(item.fieldKey, []).append(item)
         facts: list[Fact] = []
         conflicts: list[Conflict] = []
+        latest_customer = next(
+            (m for m in reversed(state["request"].messages) if m.sender == "CUSTOMER"), None
+        )
+        message_positions = {
+            message.messageId: index for index, message in enumerate(state["request"].messages)
+        }
         for field_key, observations in groups.items():
             existing = originals.get(field_key)
-            confirmed = [v for v in observations if v.value and v.value.strip()]
-            if existing and existing.status == "CONFIRMED" and existing.value:
+            correction = next(
+                (
+                    item
+                    for item in reversed(observations)
+                    if item.isCorrection
+                    and item.source == "CUSTOMER"
+                    and latest_customer is not None
+                    and item.evidence.messageId == latest_customer.messageId
+                    and item.observedText
+                    and item.observedText.strip()
+                    and item.observedText in latest_customer.content
+                    and is_explicit_correction(latest_customer.content)
+                ),
+                None,
+            )
+            # 명시적인 정정은 고객의 이전 설명만 대체한다. 사진·OWNER 값은 계속 비교한다.
+            replaces_customer = correction is not None and (
+                existing is None or existing.source == "CUSTOMER"
+            )
+            if replaces_customer:
+                observations = [correction] + [v for v in observations if v.source == "PHOTO"]
+            existing_confirmed = bool(
+                existing
+                and not replaces_customer
+                and existing.status == "CONFIRMED"
+                and existing.value
+                and (
+                    field_key != "symptom"
+                    or existing.source == "OWNER"
+                    or is_specific_symptom(existing.value)
+                )
+            )
+            confirmed = [
+                v
+                for v in observations
+                if v.value
+                and v.value.strip()
+                and not v.unconfirmedReason
+                and (field_key != "symptom" or is_specific_symptom(v.value))
+            ]
+            if existing_confirmed:
                 # 과거 발화/사진을 다시 요약한 값은 새 고객 입력이 아니다.
                 # 같은 근거의 재추출로 Spring의 확인값과 가짜 충돌을 만들지 않는다.
                 confirmed = [
@@ -157,7 +259,15 @@ def build_workflow(
                             (
                                 item.source == "CUSTOMER"
                                 and existing.messageId is not None
-                                and item.evidence.messageId == existing.messageId
+                                and (
+                                    item.evidence.messageId == existing.messageId
+                                    or (
+                                        existing.messageId in message_positions
+                                        and item.evidence.messageId in message_positions
+                                        and message_positions[item.evidence.messageId]
+                                        < message_positions[existing.messageId]
+                                    )
+                                )
                             )
                             or (
                                 item.source == "PHOTO"
@@ -168,7 +278,7 @@ def build_workflow(
                     )
                 ]
             candidates: list[ConflictCandidate] = []
-            if existing and existing.status == "CONFIRMED" and existing.value:
+            if existing_confirmed:
                 evidence = (
                     Evidence(
                         photoId=existing.photoId if existing.source == "PHOTO" else None,
@@ -203,7 +313,7 @@ def build_workflow(
                 if (
                     field_key in rules.referenceFields
                     and field_key not in rules.required_fields(state["workCategory"].value)
-                    and state["request"].askCounts.get(field_key, 0) >= rules.max_asks
+                    and state["request"].askCounts.get(field_key, -1) >= rules.followupLimit
                     and not (existing and existing.source == "OWNER")
                 ):
                     latest = confirmed[-1]
@@ -221,7 +331,7 @@ def build_workflow(
             if existing and existing.source == "OWNER":
                 # 사장님 수정값은 어떤 AI 출력으로도 덮어쓰지 않는다.
                 continue
-            if existing and existing.status == "CONFIRMED" and existing.value:
+            if existing_confirmed:
                 continue
             if confirmed:
                 item = confirmed[-1]
@@ -234,13 +344,17 @@ def build_workflow(
                         evidence=item.evidence,
                     )
                 )
-            elif existing is None or existing.status != "CONFIRMED":
-                unreadable = next((v for v in observations if v.unconfirmedReason), None)
+            else:
+                unreadable = next((v for v in reversed(observations) if v.unconfirmedReason), None)
+                if unreadable is None and field_key == "symptom":
+                    vague = next((v for v in reversed(observations) if v.value), None)
+                    if vague is not None:
+                        unreadable = vague.model_copy(update={"unconfirmedReason": "NOT_PROVIDED"})
                 if unreadable is not None:
                     facts.append(
                         Fact(
                             fieldKey=field_key,
-                            value=None,
+                            value=unreadable.value,
                             source=unreadable.source,
                             status="UNCONFIRMED",
                             unconfirmedReason=unreadable.unconfirmedReason,
@@ -296,25 +410,20 @@ def build_workflow(
         target = blocking_conflicts[0] if blocking_conflicts else None
         if target is None and missing:
             target = missing[0]
-        if target is None and "symptom" in effective:
-            # '안 돼요/돈다'는 난방·온수·전원 상태가 확인된 설명이 아니다.
-            symptom = effective["symptom"].replace(" ", "")
-            generic = ("안돼", "안되", "안됨", "돈다", "작동안", "고장")
-            specific = ("난방", "온수", "전원")
-            if any(term in symptom for term in generic) and not any(
-                term in symptom for term in specific
-            ):
-                target = "symptom"
         # 필수 증상이 충분한지 확인한 뒤, 참고정보 충돌은 남은 질문 횟수 안에서만 묻는다.
         # 한도를 넘긴 참고정보만으로 ESCALATE_TO_OWNER를 생성하지 않는다.
         if target is None:
             target = next(
-                (key for key in reference_conflicts if req.askCounts.get(key, 0) < rules.max_asks),
+                (
+                    key
+                    for key in reference_conflicts
+                    if req.askCounts.get(key, -1) < rules.followupLimit
+                ),
                 None,
             )
         if target is not None:
-            count = req.askCounts.get(target, 0)
-            if count >= rules.max_asks:
+            count = req.askCounts.get(target, -1)
+            if count >= rules.followupLimit:
                 action = NextAction(
                     action="ESCALATE_TO_OWNER",
                     ruleReason="LOW_CONFIDENCE",
@@ -346,7 +455,7 @@ def build_workflow(
                 ),
             }
         if category.status != "CONFIRMED" or category.value is None:
-            if req.askCounts.get("work_category", 0) >= rules.max_asks:
+            if req.askCounts.get("work_category", -1) >= rules.followupLimit:
                 return {
                     "stage": "DECIDE",
                     "nextAction": NextAction(
@@ -510,7 +619,7 @@ def build_workflow(
             inquiryId=req.inquiryId,
             inputVersion=req.inputVersion,
             ruleVersion=rules.version,
-            promptVersion="intake-v1",
+            promptVersion=PROMPT_VERSION,
             decidedBy="RULE",
             modelName=getattr(provider, "model", "mock"),
             usage=Usage(
@@ -524,6 +633,8 @@ def build_workflow(
             workCategory=state["workCategory"],
             safety=state["safety"],
             intent=state["intent"],
+            intentEvidence=state.get("intentEvidence"),
+            analyzedPhotoIds=state.get("analyzedPhotoIds", []),
             nextAction=state["nextAction"],
             reply=state["reply"],
         )
@@ -533,8 +644,8 @@ def build_workflow(
 
     # 1. 노드 등록
     for name, node in (
-        ("extract_message", extract_message),
-        ("analyze_image", analyze_image),
+        ("extract_message", aextract_message if asynchronous else extract_message),
+        ("analyze_image", aanalyze_image if asynchronous else analyze_image),
         ("merge_facts", merge_facts),
         ("check_rules", check_rules),
         ("decide_action", decide_action),

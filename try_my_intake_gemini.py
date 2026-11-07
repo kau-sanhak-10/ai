@@ -24,6 +24,7 @@ from pathlib import Path
 from pydantic_core import to_jsonable_python
 
 from app.core.config import get_settings
+from app.intake.context import make_text_input
 from app.intake.contracts import (
     AnalyzeRequest,
     CategoryDecision,
@@ -159,44 +160,41 @@ class GeminiGraphTestProvider:
             ),
         )
         try:
-            # 형식 검증에 실패한 경우에만 같은 입력을 한 번 더 요청한다.
-            for attempt in range(2):
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=instructions,
-                        response_mime_type="application/json",
-                        # 중첩 계약 모델의 additionalProperties도 JSON Schema로 전달한다.
-                        response_json_schema=ModelOutput.model_json_schema(),
-                        temperature=0,
-                    ),
-                )
-                usage = getattr(response, "usage_metadata", None)
-                self.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
-                self.output_tokens += getattr(usage, "candidates_token_count", 0) or 0
-                self._debug("response", attempt=attempt + 1, text=response.text)
-                try:
-                    if not response.text:
-                        raise ValueError("Gemini에서 구조화된 출력이 반환되지 않았습니다")
-                    parsed = ModelOutput.model_validate_json(response.text)
-                    self._debug("parsed", output=parsed.model_dump(mode="json"))
-                    return parsed
-                except ValueError:
-                    if attempt == 1:
-                        raise
-            raise RuntimeError("Gemini 구조화 출력 검증 실패")
+            response = client.models.generate_content(
+                model=self.model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=instructions,
+                    response_mime_type="application/json",
+                    response_json_schema=ModelOutput.model_json_schema(),
+                    temperature=0,
+                ),
+            )
+            usage = getattr(response, "usage_metadata", None)
+            self.input_tokens += getattr(usage, "prompt_token_count", 0) or 0
+            self.output_tokens += getattr(usage, "candidates_token_count", 0) or 0
+            self._debug("response", attempt=1, text=response.text)
+            if not response.text:
+                raise ValueError("Gemini에서 구조화된 출력이 반환되지 않았습니다")
+            parsed = ModelOutput.model_validate_json(response.text)
+            self._debug("parsed", output=parsed.model_dump(mode="json"))
+            return parsed
         finally:
             client.close()
 
     def extract_message(self, messages) -> Understanding:
+        return self._extract_text(messages, make_text_input(messages))
+
+    def extract_request(self, request: AnalyzeRequest) -> Understanding:
+        return self._extract_text(request.messages, make_text_input(request.messages, request))
+
+    def _extract_text(self, messages, text: str) -> Understanding:
         from google.genai import types
 
-        text = "\n".join(f"[messageId={m.messageId}] {m.content}" for m in messages)
         parsed = self._generate(TEXT_INSTRUCTIONS, [types.Part.from_text(text=text)])
         observations = []
         for item in parsed.values:
-            if item.value is None:
+            if item.value is None and not item.unsure:
                 self._debug("rejected", fieldKey=item.fieldKey, reason="null_value")
                 continue
             if not item.observedText:
@@ -204,7 +202,15 @@ class GeminiGraphTestProvider:
                 continue
             # LLM이 제시한 '관찰 텍스트'가 실제 메시지에 있어야만 근거로 인정한다.
             matching = next(
-                (msg for msg in reversed(messages) if item.observedText in msg.content), None
+                (
+                    msg
+                    for msg in reversed(messages)
+                    if msg.sender == "CUSTOMER"
+                    and (item.messageId is None or item.messageId == msg.messageId)
+                    and item.observedText.strip()
+                    and item.observedText in msg.content
+                ),
+                None,
             )
             if matching is None:
                 self._debug(
@@ -217,10 +223,12 @@ class GeminiGraphTestProvider:
             observations.append(
                 RawObservation(
                     fieldKey=item.fieldKey,
-                    value=item.value,
+                    value=None if item.unsure else item.value,
                     source="CUSTOMER",
                     evidence=Evidence(messageId=matching.messageId),
                     observedText=item.observedText,
+                    unconfirmedReason="CUSTOMER_UNSURE" if item.unsure else None,
+                    isCorrection=item.isCorrection,
                 )
             )
         self._debug("accepted", candidates=len(parsed.values), observations=len(observations))
@@ -232,6 +240,7 @@ class GeminiGraphTestProvider:
         return Understanding(
             observations=observations,
             intent=intent,
+            intentEvidence=parsed.intentEvidence,
             workCategory=parsed.workCategory,
             safety=parsed.safety,
         )

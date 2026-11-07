@@ -1,7 +1,7 @@
 # DS-05 · AI 입출력 / LangGraph 처리 흐름 (WBS 범위)
 
-갱신일: 2026-11-03. 기준: `api-명세서_version2.txt` 6장 및 10/26 확정 운영 기준.
-구현 대조 기준: `feat/#6-LangGraph`의 `83bec49`. 현재 구현, 로컬 검증, 후속 연동을 구분한다.
+갱신일: 2026-11-06. 기준: `api-명세서_version2.txt` 6장 및 10/26 확정 운영 기준.
+구현 대조 기준: `feat/#6-LangGraph`의 기존 구현과 PR 피드백 1~3번 후속 수정. 모델 선택·Bedrock 전환(피드백 4번)은 팀 합의 후 별도 반영한다.
 
 ## 담당 시스템과 범위
 
@@ -14,10 +14,15 @@
 
 이 저장소에 구현된 범위는 FastAPI 분석 요청 수신부터 LangGraph 결과 반환까지다. Spring DB 저장·재시작 복원·비동기 재시도·예약 확정의 실제 구현 및 왕복 검증은 이 저장소의 모의 테스트로 완료 판정하지 않는다.
 
+2026-11-06 AI-02에서 최신 문맥 전달·고객 정정·보완 횟수·무재시도·운영 기록을 보완했다. 최종 258개 테스트 및 Ruff 검사를 통과했으며, 이번 변경과 실호출의 한계는 [AI02_conversation.md](AI02_conversation.md)를 기준으로 확인한다. 아래 기존 실호출·테스트 수치는 당시 검증 기록이다.
+
+후속 Gemini 실호출에서는 부정 표현 1턴·고객 정정 2턴·OWNER 제조사 보호 1턴을 실행해 세 사례 모두 PASS를 확인했다. `check_ai02_live.py --case all`로 재현하며 상세 결과는 위 AI-02 문서의 실험 기록을 참조한다. Spring 저장은 메모리 모사이며 실제 DB 검증과 구분한다.
+
 ## API
 
 - 경로: `POST /internal/v1/inquiries/analyze`, 헤더: `X-Internal-Key` (Spring과 공유하는 비밀키).
 - 요청: 명세 6.2 `requestId`, `inquiryId`, `ownerId`, `inputVersion`, `handlerMode`, `business`, `fields`, `askCounts`, `messages`, `photos`, `safetyFlag`.
+- 사진 처리 이력용 선택 필드 `processedPhotoIds`를 추가했다. 기본값은 `[]`이며 기존 요청도 유효하다. 응답에는 이번 요청에서 성공적으로 분석한 `analyzedPhotoIds`와 검증된 연결 의도 근거 `intentEvidence`를 추가했다. Spring DTO 및 저장 정책과 함께 연동해야 한다.
 - 응답: `ApiResponse[AnalyzeResult]` — `{success,code,message,result}`. 결과는 명세 6.3의 `facts`, `conflicts`, `interpretations`, `workCategory`, `safety`, `intent`, `nextAction`, `reply` 및 버전·모델 사용량 메타데이터.
 - 현재 계약의 `FieldKey`는 `manufacturer`, `model`, `boiler_type`, `error_code`, `symptom`이다. 구조화된 고객 이름·주소·전화번호·예약 슬롯 필드는 없다. 연락처 인증·방문 주소·지역·일정 조건은 Spring이 관리·검증한다. 대화에 개인정보가 포함될 수 있으므로 구조화 필드 부재만으로 외부 전송 데이터가 비식별이라고 보장할 수는 없다.
 - 문의/업체·사진 ID의 **소유권 확인은 Spring의 책임**이다. AI는 공유 내부 키를 인증하고, 반환된 사실·충돌 후보의 근거 ID가 요청의 메시지·사진 또는 기존 필드 근거에 포함되는지 검사한다. 이는 실제 DB 소유권 조회를 대신하지 않는다. 사진 URL은 HTTPS 및 일부 로컬·사설 주소 차단 규칙을 적용한다.
@@ -27,7 +32,7 @@
 ### 항목·근거·해석의 구분
 
 - `RawObservation`: 모델 추출 후보. `value`, `observedText`, `source`, `evidence`, `unconfirmedReason`을 분리한다. 문자 근거는 실제 고객 발화에 포함되는지 어댑터에서 확인한다.
-- `facts`: 서버 현재값과 대조한 항목별 값·출처·확인 상태·미확인 이유. AI의 `source`는 `CUSTOMER/PHOTO`이며 기존 `OWNER` 값은 덮어쓰지 않는다. 관찰값의 `CONFIRMED`가 예약 진입에 필요한 구체성까지 보장하는 것은 아니다.
+- `facts`: 서버 현재값과 대조한 항목별 값·출처·확인 상태·미확인 이유. AI의 `source`는 `CUSTOMER/PHOTO`이며 기존 `OWNER` 값은 덮어쓰지 않는다. `보일러가 고장 났어요`, `보일러가 이상해요`처럼 구체적인 부위·상태가 없는 증상은 원문 값을 보존하고 처음부터 `status=UNCONFIRMED`, `unconfirmedReason=NOT_PROVIDED`로 반환한다. 여기서 `NOT_PROVIDED`는 구체적인 핵심 증상이 제공되지 않았다는 뜻이다.
 - `conflicts`: 기존 값과 새 후보를 근거와 함께 반환한다. 충돌한 값으로 제품별 안내나 필수정보 충족을 확정하지 않는다.
 - `interpretations`: 사진에서 직접 읽은 값과 구별되는 매뉴얼 해석. 제조사·모델이 일치하는 검색 자료만 사용하고 출처를 반환한다. 오류코드만으로 고장 부품이나 견적을 확정하지 않는다.
 
@@ -43,8 +48,8 @@ START → extract_message → (photos?) analyze_image → merge_facts
 
 | Node | 읽는 State | 작성 State | 실패 처리 |
 | --- | --- | --- | --- |
-| extract_message | 고객 messages, safetyFlag | observations, intent, workCategory, safety, stage=EXTRACT | 빈 구조화 출력·직접 검증 실패 시 어댑터의 재시도 범위 적용 |
-| analyze_image | photos, safety | observations(누적), safety | 문자 판독 불가는 미확인 후보, 호출 실패는 오류 |
+| extract_message | 최신 fields, askCounts, 이전 질문을 포함한 messages, safetyFlag | observations, intent, workCategory, safety, stage=EXTRACT | 출력 검증 실패 시 재호출 없이 오류 반환 |
+| analyze_image | photos, processedPhotoIds, safety | observations(누적), safety, analyzedPhotoIds | 처리 이력의 사진은 제외, 문자 판독 불가는 미확인 후보, 호출 실패는 오류 |
 | merge_facts | fields, observations, workCategory, askCounts, rules | facts, conflicts | 같은 근거 재추출 제외, OWNER 값 보호, 필수/참고 충돌 구분 |
 | check_rules | intent, safety, handlerMode | 강제 nextAction 또는 null, stage=DECIDE | OWNER 모드 거부, 안전·명시적 연결/회신 요청 우선 이관 |
 | decide_action | 원본 및 확인 정보, askCounts, workCategory, business | nextAction | 질문 한도·안전·예약 단계 규칙 검사 |
@@ -53,9 +58,12 @@ START → extract_message → (photos?) analyze_image → merge_facts
 | validate_result | facts, conflicts, nextAction, reply, 사진/메시지 근거 ID | result | 출력 불일치 502, Spring이 최신 inputVersion 재검증 |
 
 - Node State는 원본 입력 + 후속 단계에 필요한 **구조화된 Raw 값**만 보관한다. 사진 존재 여부·질문 횟수 합계·예약 슬롯 같은 파생값은 보관하지 않는다.
-- `askCounts[field]`: Spring이 넘긴, **이미 발송한 질문 횟수**. 최초 질문 1회 + 보완 요청 최대 2회 = 합계 3회로 해석한다. 작업 유형 질문은 `targetFieldKeys=["work_category"]`로 표시하고 동일 키로 횟수를 누적해야 한다. 이 키를 기존 백엔드가 허용하는지는 연동 전 확인이 필요하다.
+- `askCounts[field]`: 명세 6.2에 따라 **최초 질문을 제외한 보완 요청 횟수**다. 최초 질문 후 `0`, 보완 1회 후 `1`, 보완 2회 후 `2`이며 `2`이면 추가 질문을 멈춘다. 문자·재촬영 방식이 바뀌어도 같은 항목에서 합산한다. 작업 유형 질문은 `targetFieldKeys=["work_category"]`로 표시한다. 기존의 질문 합계 해석은 AI-02에서 바로잡았으며, Spring도 보완 횟수를 보내야 한다.
 - 현재값과 **출처 및 messageId/photoId가 같은** 재추출 후보는 새 정보로 충돌 비교하지 않는다. 증상의 공백·문장 끝 구두점 차이는 정규화해 비교한다. 제조사·모델·오류코드의 식별 문자는 유지한다.
-- `normalize_customer_intent()`는 최신 고객 발화에서 명시적인 사람 연결·전화 회신 요청을 확인한다. 근거 없는 모델의 `ASK_OWNER/CALLBACK` 예측은 관찰값 유무에 따라 `ANSWER/OTHER`로 보정한다. 안전 플래그는 이 보정과 관계없이 우선 처리한다.
+- 증상 구체성은 [symptom_rules.py](../app/intake/symptom_rules.py)에서 대상과 관찰 상태의 조합으로 판단한다. `온수 관련 문의예요`, `전원이요`처럼 대상만 언급하면 미확인이고, `온수가 안 나와요`, `따뜻한 물이 안 나와요`, `전원이 안 들어와요`처럼 상태가 함께 있으면 확인 후보로 취급한다. 물샘·가스 냄새 등 구체적인 현상도 별도 규칙으로 확인한다. 원인이나 고장 부품을 추론하지 않는다.
+- 미확인 증상은 확인된 현재값 및 충돌 후보에서 제외하고 구체적인 보완 답변으로 갱신한다. 과거에 일반 고객의 모호한 증상이 `CONFIRMED`로 저장된 경우도 보완 답변과 충돌시키지 않는다. 기존 `OWNER` 값은 이 처리로 덮어쓰지 않는다. 서로 다른 구체적인 증상이 제시되면 기존대로 충돌 재확인을 진행한다.
+- 모델은 연결·회신 의도와 함께 `intentEvidence={messageId, observedText}`를 반환한다. 최신 고객 메시지 ID와 원문 문구의 일치뿐 아니라 **그 근거가 포함된 절이 실제 연결 요청인지** 확인한다. 거절·부정·과거 통화 설명·인용된 안내 문구는 근거가 일치해도 이관 의도로 인정하지 않는다. `전화 좀 주실 수 있나요`, `사장님 바꿔주세요`, `사장님과 직접 이야기하고 싶어요`는 명시 요청으로 처리한다.
+- 검증을 통과하면 모델이 선택한 `ASK_OWNER/CALLBACK`을 유지한다. 근거가 없거나 검증에 실패한 경우에도 별도의 명시 요청 절이 있으면 보완 규칙으로 확인한다. 이 보완 경로에도 같은 부정·과거 설명 검사를 적용한다. 확인되지 않은 모델의 연결 의도는 관찰값 유무에 따라 `ANSWER/OTHER`로 보정하고 거부된 `intentEvidence`는 응답에 남기지 않는다. 안전 플래그는 의도 보정과 관계없이 우선 처리한다.
 - 필수 항목은 [rules/inquiry_types.yaml](../rules/inquiry_types.yaml)(YAML 1.2 호환 JSON 문법)에서 관리한다. 현재 공통 필수는 `symptom`이며 업무별 추가 필수 항목은 비어 있다. 참고 항목은 `manufacturer/model/boiler_type/error_code`다. 업체별 필수 항목의 개별 설정은 미구현이며, 요청의 `business`는 허용 작업 유형과 자동 예약 허용 여부를 전달한다.
 - `decidedBy=RULE`: 현재 행동 선정 함수는 검증 규칙 기반이고, 외부 LLM은 대화/사진의 원시 관찰값과 의도/작업 유형을 구조화하는 역할이다.
 
@@ -97,8 +105,9 @@ START → extract_message → (photos?) analyze_image → merge_facts
 
 ### 출력 검증 실패·외부 호출 실패
 
-- OpenAI 어댑터는 빈 `output_parsed` 또는 반환 후 직접 수행한 모델 검증 실패에 대해 같은 입력을 한 번 더 요청한다. SDK의 `responses.parse()` 내부에서 발생한 검증 예외는 현재 이 재시도 블록에 포함되지 않는다.
-- 로컬 Gemini 어댑터는 빈 응답·JSON/Pydantic 검증 실패에 대해 한 번 더 요청한다. 네트워크·권한·과금 오류에 대한 자동 재호출은 하지 않는다. 이 CLI의 예외는 FastAPI 오류 응답 변환을 거치지 않는다.
+- FastAPI는 취소 가능한 비동기 그래프와 `AsyncOpenAI`를 사용한다. 규칙 로드·문자 추출·사진 순차 분석·최종 검증에 **하나의 전체 시간 예산**을 적용한다. `INTAKE_TIMEOUT_SECONDS` 기본값은 25초이며 `0 < 값 < 30`으로 제한한다. 사진마다 예산을 새로 시작하지 않는다.
+- 제한 초과 시 진행 중 비동기 모델 호출의 로컬 대기를 취소하고 클라이언트를 정리한 뒤 504 `AI_MODEL_TIMEOUT`을 반환한다. 후속 사진을 계속 호출하거나 부분 성공 결과를 반환하지 않는다. 이는 Spring의 결과 적용 검증이나 외부 제공사 측 추론·과금 중단을 보장하는 기능은 아니다. 로컬 동기 CLI는 이 FastAPI 전체 제한의 적용 대상이 아니다.
+- OpenAI 서비스 어댑터와 로컬 Gemini 어댑터 모두 빈 출력·JSON/Pydantic 검증 실패 시 내부 재시도를 하지 않는다. API 명세 6.4에 따라 같은 입력의 재시도는 Spring에서만 관리한다. SDK 자동 재시도도 비활성화한다. 로컬 Gemini CLI의 예외는 FastAPI 오류 응답 변환을 거치지 않는다.
 - 규칙 파일은 그래프 실행 전에 로드하며, 없거나 잘못된 규칙을 임의 기본값으로 대체하지 않는다. FastAPI는 다음 오류를 공통 응답으로 반환한다.
 
 | 상황 | HTTP / 오류 코드 |
@@ -108,7 +117,26 @@ START → extract_message → (photos?) analyze_image → merge_facts
 | JSON/Pydantic·결과 근거 검증 실패 | 502 `AI_OUTPUT_INVALID` |
 | 키·모델 미설정, 기타 외부 모델 호출 실패 | 502 `AI_MODEL_ERROR` |
 | 코드에서 식별하는 외부 호출 타임아웃 | 504 `AI_MODEL_TIMEOUT` |
+| 전체 분석 시간 예산 초과 | 504 `AI_MODEL_TIMEOUT` |
 | 업무 규칙 파일 로드 실패 | 503 `AI_RULES_UNAVAILABLE` |
+
+구현 참고: [OpenAI Python SDK 비동기 호출](https://developers.openai.com/api/reference/python), [Python asyncio.timeout](https://docs.python.org/3.12/library/asyncio-task.html#asyncio.timeout).
+
+### 사진 전달·처리 이력: Spring 연동 합의안
+
+1. `photos`에는 원칙적으로 신규 또는 재시도가 필요한 미처리 사진만 HTTPS 임시 URL로 전달한다. 전체 사진 목록을 보내는 기존 방식도 `processedPhotoIds`와 함께 사용할 수 있다.
+2. AI는 `processedPhotoIds`에 있는 사진 ID를 분석에서 제외한다. `fields`에 사진 근거가 있다는 이유만으로 해당 사진 전체의 처리가 완료됐다고 추정하지 않는다.
+3. 성공 응답의 `analyzedPhotoIds`는 실제 호출이 완료된 사진 ID다. 추출된 글자·항목이 없거나 판독 불가여도 정상 분석이 완료되면 ID를 포함한다. 재분석을 건너뛴 사진은 포함하지 않는다.
+4. Spring은 최신 입력 버전·응대 주체·중복 여부 검증을 통과해 결과를 저장할 때만 이 ID들을 처리 이력에 반영한다. 시간 초과·실패·STALE 응답으로 처리 완료를 기록하지 않는다.
+5. 다음 요청에는 저장된 `fields`, `safetyFlag`, `processedPhotoIds`를 함께 전달한다. 새로 첨부한 사진 또는 새 ID로 재촬영한 사진은 다시 분석한다. AI 프로세스에 문의별 사진 캐시를 두지 않는다.
+
+전체 사진 묶음 중 일부가 성공했더라도 이후 사진의 API 오류·출력 검증 실패·시간 초과가 발생하면 요청 전체가 오류이며 `result=null`이다. 앞서 성공한 사진의 ID도 정상 응답처럼 전달하지 않는다. Spring은 이 요청으로 처리 이력을 갱신하지 않고 미처리 사진을 다시 전달한다. 따라서 실패한 묶음의 재시도에서는 앞서 분석했던 사진을 다시 분석할 수 있다.
+
+사진 처리 이력의 소유자는 Spring이며 문의·업체 범위에서 관리한다. **항목값·안전 상태·사진 처리 이력·요청 적용 기록을 같은 DB 트랜잭션으로 저장**하고, 저장 직전에 최신 `inputVersion`·응대 주체·중복 여부를 확인해야 한다. `STALE`, 인계 이후 응답, 중복 응답은 사진 이력만 따로 갱신해서도 안 된다. 이 원칙은 `SimulatedSpring`에서도 모의 검증하며 실제 Spring 트랜잭션 구현을 대신하지 않는다.
+
+`processedPhotoIds`·`analyzedPhotoIds`와 기존 추가 필드 `intentEvidence`는 원래 명세 6.2~6.3 밖의 확장 계약이다. 이번 안정성 보완에서 필드를 더 추가하지 않았다. `processedPhotoIds` 생략 시 기본값 `[]`로 기존 요청은 유효하지만, 기존 방식으로 전체 사진을 매번 전달하면 처리 이력을 알 수 없어 다시 분석한다. Spring 요청/응답 DTO의 필드 수용 여부, 저장 위치·조회 범위·실패 시 재시도 정책은 배포 전에 합의해야 한다.
+
+이 필드와 동작은 AI 측에서 구현·모의 검증한 연동안이다. Spring의 DTO·DB 처리 및 실제 신규 사진 전달 방식은 담당자와 합의·왕복 검증해야 한다.
 
 ## Jev 접근 조건·비교 과제 정리
 
@@ -121,7 +149,9 @@ START → extract_message → (photos?) analyze_image → merge_facts
 
 - 비용 없는 회귀 테스트: 정상 문자→`CHECK_SCHEDULE` 제안, 흐린 사진→미확인, 사진/진술 충돌→재확인, 필수/참고정보의 질문 한도 차이, 안전·명시적 연결 요청 우선 이관, OWNER 값 보호, 근거 ID 범위 위반, 내부 키·입출력 검증.
 - 멀티턴 테스트: 같은 문의의 이전 `fields/askCounts/messages` 전달, 입력 버전 증가, 오래된 응답·중복 응답 적용 거부, 같은 근거 재추출·증상 표기 차이로 인한 재질문 방지, 실제로 다른 증상 제시 시 재확인을 확인한다.
-- 이전 실행 기록에서 `test_intake_graph.py`·`test_intake_provider.py`·`test_intake_gemini_provider.py`·`test_intake_intent_rules.py`·`test_reference_conflict_policy.py`·`test_ilro_multiturn.py`의 관련 테스트 **44개**와 Ruff 검사가 통과했다. 모두 `tests/` 아래에 있다. 이는 전체 테스트 수나 모든 고객 표현의 통과를 뜻하지 않는다. 이번 문서 갱신에서는 테스트·실제 API를 다시 실행하지 않았다.
+- PR 후속 회귀 검증에는 [test_intake_pr_feedback.py](../tests/test_intake_pr_feedback.py), [test_intake_deadline.py](../tests/test_intake_deadline.py)를 추가했다. 모호한 증상 저장 후 보완, 기존 모호한 확정값 호환, 원문 근거가 있는 연결 요청, 조작·과거 근거 거부, 빈 사진 분석의 처리 이력, 신규 사진 선별, 문자·사진·재시도의 전체 시간 예산 및 SDK 취소·정리를 검증한다. 실제 모델 호출은 하지 않는 테스트다.
+- 2026-11-05 최종 확인: 전체 테스트 **137개 통과**, 전체 Ruff 린트·포맷 검사 통과. 기존 WBS Mock 픽스처 `DEV-014`의 빈 작업 유형 문자열은 계약에 맞는 `null`로 교정했고 기대 행동은 유지했다. 이번 PR 후속 수정 검증에서는 실제 외부 API를 호출하지 않았다.
+- 2026-11-06 안정성 보완 확인: 지정된 3개 회귀 테스트 파일 **129개 통과**, 전체 테스트 **234개 통과**. 이전 137개 테스트를 유지하고 97개 사례를 추가했다. 대상 이름만 있는 증상과 따뜻한 물 동의 표현, 근거가 일치하는 거절·과거 설명의 이관 방지, 정상 연결 요청 및 모델 판단 유지, 사진 부분 실패·재시도·시간 초과의 부분 결과 차단, STALE·인계·중복 응답의 사진 이력 불변을 검증했다. 실제 외부 API 호출과 실제 Spring DB 검증은 수행하지 않았다.
 - 로컬 Gemini 실호출에서는 `보일러가 켜지는데 온수가 안나와요.` → `수리를 받고 싶어요.`의 2턴으로 추가 증상 질문 없이 `CHECK_SCHEDULE`에 도달한 사례를 확인했다. 이는 해당 사례의 확인이며 전체 모델 품질 평가나 Spring 연동 검증은 아니다.
 - **Spring과 실제 통합 QA는 별도**다. 중복 요청·최신 버전·인계 상태·고객/업체 권한·실제 DB 저장 및 재시작 복원·주소/지역/연락처 인증·방문 시간 조회/선택/예약 확정을 11/3~11/9 연결 및 QA-02에서 확인할 계획이다. 이 문서는 실제 왕복 검증 완료를 선언하지 않는다.
 
@@ -132,6 +162,9 @@ uv sync --locked
 uv run pytest
 uv run ruff format --check
 uv run ruff check
+
+# PR 피드백 1~3번 안정성 회귀 검증
+uv run python -m pytest tests/test_intake_pr_feedback.py tests/test_intake_deadline.py tests/test_ilro_multiturn.py -v
 
 # 외부 API를 호출하지 않는 고정 3턴 시뮬레이션
 uv run python simulate_ilro_multiturn.py --mode mock
@@ -145,12 +178,14 @@ uv run python try_my_intake_gemini.py --mode gemini --message "온수가 안 나
 
 [simulate_ilro_multiturn.py](../simulate_ilro_multiturn.py)는 Python 메모리로 Spring을 모사하는 검증 도구다. 실제 DB나 예약 API에 접속하지 않으며 운영 대화 저장소로 사용하지 않는다. `CHECK_SCHEDULE/ESCALATE_TO_OWNER/COMPLETE/UNSERVICEABLE`을 받으면 수집 루프를 종료한다. 일정 안내 후 시간 입력을 받아 예약하는 기능은 이 시뮬레이터의 범위가 아니다.
 
+기존의 추가질문 대상 저장 보류 가정(`defer_asked_field`)과 실험 옵션 `--persist-asked-field`는 제거했다. 이제 시뮬레이터도 AI가 반환한 `UNCONFIRMED` 증상을 그대로 저장하고 다음 턴의 구체적인 답변으로 갱신한다. Spring이 별도로 증상 구체성을 판정하는 규칙을 만들 필요가 없도록 상태를 반환하는 것이 이번 변경의 목적이다.
+
 Gemini 모드의 최종 `PASS`는 기본적으로 문의·버전 일치, 결과 적용, 오래된 응답 폐기를 확인한다. 대화 품질과 중복 질문 여부까지 자동 보장하지 않는다. Mock 고정 시나리오에는 기대 행동·질문 대상 검사도 포함되며 별도 회귀 테스트가 재질문 방지 사례를 검증한다. 이 두 스크립트는 테스트에서 import하므로 함께 유지해야 한다.
 
 ## 미해결 항목·완료 판정의 제한
 
-1. **모호한 증상 저장 후 보완 답변의 충돌 처리:** 그래프는 모호한 증상도 `facts`에 `CONFIRMED`로 제안할 수 있다. 시뮬레이터 기본값 `defer_asked_field=True`는 추가질문 대상의 저장을 보류한다. 실제 서버가 이를 즉시 확정 저장하면 `보일러가 고장 났어요` 뒤 `온수가 안 나와요`가 보완 설명 대신 충돌이 되어 재질문할 수 있다. `--mode mock --persist-asked-field`로 이 차이를 재현할 수 있으며 기본 시뮬레이션의 성공으로 실제 저장 정책을 확정하지 않는다.
-2. **모호한 증상 판별 범위:** 현재 `decide_action`은 일부 단어를 기준으로 검사한다. `보일러가 이상해요`처럼 검사에 없는 표현은 작업 유형이 확인되면 구체성 확인 없이 `CHECK_SCHEDULE`로 진행할 수 있음을 확인했다. 증상 구체성·보완 설명과 실제 충돌의 구분은 보완이 필요하다.
+1. **증상 의미 판별:** 대상과 상태를 함께 확인하는 유한한 규칙이며 모든 동의 표현을 이해하는 것은 아니다. 관찰한 상태를 확인할 수 없는 표현은 추가 질문한다. 구체적인 증상끼리의 자유로운 바꿔 말하기는 여전히 문자열 차이로 충돌할 수 있으므로 평가 사례를 늘려야 한다.
+2. **의도·사진 처리 계약:** 원문 근거와 요청·거절·과거 설명의 규칙을 함께 검사하지만 복잡한 중의적 표현의 의미 분류를 완전히 보장하지 않는다. 구분이 불확실하면 이관 의도를 확정하지 않는다. `intentEvidence`·`processedPhotoIds`·`analyzedPhotoIds`의 Spring 연동 및 전체 25초 제한과 실제 Spring의 30초 시도 설정의 정합성은 실환경 검증이 필요하다.
 3. **작업 유형 현재값 계약:** 요청에는 고객이 선택·수정한 작업 유형의 현재값이 별도 포함되지 않는다. 현재 그래프는 고객 발화 전체에서 매번 다시 추출한다. 고객 수정값의 우선순위·유지 방식은 Spring과 합의해야 한다.
-4. **업체별 정책·상담 문맥:** 현재 필수정보 설정은 전역 규칙 파일의 업무 유형별 설정이며 업체별 개별 정책은 없다. 모델에는 고객 메시지만 전달하므로 AI의 직전 질문을 포함한 문맥 추출도 후속 검토 대상이다. 모델명·사진·연식·설치 환경·비용 부담 주체를 일괄 필수화하지 않는다.
+4. **업체별 정책·상담 문맥:** 현재 필수정보 설정은 전역 규칙 파일의 업무 유형별 설정이며 업체별 개별 정책은 없다. AI-02부터 최신 필드·출처·보완 횟수 및 AI/OWNER 질문을 포함한 대화를 함께 전달하며 고객 원문만 사실 근거로 인정한다. 모델명·사진·연식·설치 환경·비용 부담 주체를 일괄 필수화하지 않는다.
 5. **미연결 모듈:** Bedrock/YOLO 비교, 매뉴얼 인덱스, Jev 실험, 실제 Spring·프론트 왕복 흐름은 완료 범위와 분리한다. 이 문서의 구현·검증 기록만으로 WBS 전체 완료로 표시하지 않는다.
