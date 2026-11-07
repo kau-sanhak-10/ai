@@ -19,6 +19,11 @@ class ErrorCode(Enum):
     RESOURCE_NOT_FOUND = (HTTPStatus.NOT_FOUND, "요청한 리소스를 찾을 수 없습니다")
     METHOD_NOT_ALLOWED = (HTTPStatus.METHOD_NOT_ALLOWED, "지원하지 않는 HTTP 메서드입니다")
     INTERNAL_SERVER_ERROR = (HTTPStatus.INTERNAL_SERVER_ERROR, "서버 내부 오류가 발생했습니다")
+    UNAUTHORIZED = (HTTPStatus.UNAUTHORIZED, "내부 인증이 필요합니다")
+    AI_OUTPUT_INVALID = (HTTPStatus.BAD_GATEWAY, "AI 출력 형식 검증에 실패했습니다")
+    AI_MODEL_ERROR = (HTTPStatus.BAD_GATEWAY, "AI 모델 호출에 실패했습니다")
+    AI_MODEL_TIMEOUT = (HTTPStatus.GATEWAY_TIMEOUT, "AI 모델 호출 시간이 초과되었습니다")
+    AI_RULES_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "AI 규칙을 읽을 수 없습니다")
 
     def __init__(self, status: HTTPStatus, message: str) -> None:
         self.status = status

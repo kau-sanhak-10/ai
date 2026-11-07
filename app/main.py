@@ -1,11 +1,13 @@
 from fastapi import FastAPI
 
-from app.api import health
+from app.api import health, inquiries
 from app.common.errors import register_exception_handlers
 from app.core.config import get_settings
+from app.intake.audit import configure_audit_logging
 
 
 def create_app() -> FastAPI:
+    configure_audit_logging()
     settings = get_settings()
     # API 문서(/docs)는 운영 환경에서 닫는다
     docs_enabled = settings.app_env != "prod"
@@ -19,6 +21,7 @@ def create_app() -> FastAPI:
     )
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(inquiries.router)
     return app
 
 

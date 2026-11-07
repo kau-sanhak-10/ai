@@ -1,7 +1,8 @@
 # 일로 AI 서버
 
 고객 대화·사진에서 접수정보를 추출하고, 문의 상황을 판단(Jev·범용 LLM·자체 모델 비교)하는 FastAPI 서버입니다.
-현재는 개발 환경, 공통 응답·오류 처리, 헬스체크만 준비되어 있습니다. 대화·Vision·판단 기능은 아직 구현되지 않았습니다.
+공통 응답·오류 처리, 헬스체크와 내부 문의 분석 LangGraph 경로(DS-05)가 포함됩니다.
+외부 이미지 방식 비교·매뉴얼 인덱스·예약 확정은 별도 작업입니다.
 
 ## 시작하기
 
@@ -77,3 +78,29 @@ uv run pytest           # 테스트
 - 커밋은 `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`, `test:` 유형을 사용합니다.
 - `develop` 대상으로 PR을 열고 리뷰 1명 승인 후 Squash and merge 합니다.
 - `.env`, API 키, 고객 개인정보·사진은 커밋하지 않습니다.
+
+## DS-05 내부 문의 분석
+
+- 경로: `POST /internal/v1/inquiries/analyze` (Spring 전용 `X-Internal-Key` 필수)
+- `.env`: `INTERNAL_KEY`, `OPENAI_API_KEY`, `OPENAI_MODEL` 설정 후 서비스 호출 가능
+- **실제 모델 접근 권한이나 키가 없으면 502 `AI_MODEL_ERROR`** (가짜 판단을 반환하지 않음)
+- 전체 분석 시간은 `INTAKE_TIMEOUT_SECONDS`(기본 25초, 30초 미만)로 제한하며 초과 시 504 `AI_MODEL_TIMEOUT`을 반환합니다.
+- 모호한 증상은 `UNCONFIRMED / NOT_PROVIDED`로 반환하고, 연결 의도는 최신 고객 원문의 `intentEvidence`로 검증합니다.
+- Spring은 신규 사진만 `photos`로 보내거나 처리 이력을 `processedPhotoIds`로 전달할 수 있습니다. 성공 결과의 `analyzedPhotoIds` 저장 방식은 연동 시 합의합니다.
+- 구조/Graph/Mock 테스트: `tests/test_intake_*.py`
+- 상세 설계, 책임 경계, 미구현 항목: [`docs/DS05_intake_graph.md`](docs/DS05_intake_graph.md)
+
+## AI-02 대화·정보 추출·추가 질문
+
+현재 접수정보·출처·항목별 보완 횟수와 이전 AI 질문을 포함한 대화를 한 번의 문자 분석
+요청으로 전달합니다. 고객의 명시적 정정은 원문 근거로 검증하고, 사진·사장님 확인값은
+자동으로 덮어쓰지 않습니다. `askCounts`는 최초 질문을 제외한 보완 횟수이며 최대 2회입니다.
+모델 호출과 출력 검증에 실패하면 내부 재시도 없이 오류를 반환하고 Spring이 재시도를 관리합니다.
+
+분석 성공·실패·시간 초과는 `app.intake.audit` 로거의 JSON으로 기록합니다. 원문·비밀키 없이
+모델·프롬프트 버전, 처리시간, 사용량, 호출 수, 오류 코드만 남깁니다.
+구현 범위·실행 예시·명세 차이·남은 실제 연동 검증은
+[`docs/AI02_conversation.md`](docs/AI02_conversation.md)를 참고하세요.
+
+Spring은 분석 결과를 적용하기 전에 입력 버전·응대 주체를 재확인하고, 프론트와 Spring만
+예약 가능시간 조회·선택·확정 API를 처리합니다. AI 서버는 예약을 생성하지 않습니다.
