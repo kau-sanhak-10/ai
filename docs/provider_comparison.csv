@@ -1,3 +1,3 @@
 provider,model,role,access_result,text_input,image_input,structured_json,pydantic,usage_logging,limits,limitations,decision
-Google,gemini-3.5-flash-lite,primary,live_success,live_success,live_success,live_success,live_success,live_success,RPM15; input TPM250000; RPD500 (2026-10-23 user-provided AI Studio screenshot); billing not verified,2026-10-23 문자·사진 JSON 및 CSV 저장 확인; boiler_40.png 원본 정확도 대조 미확인; 결제 및 콘솔 프로젝트 일치 미확인; 과거 503/504 보고,selected
+Google,gemini-3.5-flash-lite,primary,live_success,live_success,live_success,live_success,live_success,live_success,RPM15; input TPM250000; RPD500 (2026-10-23 user-provided AI Studio screenshot); billing not verified,2026-10-23 문자·사진 JSON 및 CSV 저장 확인; boiler_40.png 모델명 NGB 554 원본 일치는 사용자 확인; 전체 정확도·결제 및 콘솔 프로젝트 일치는 미검증; 과거 503/504 보고,selected
 OpenAI,gpt-4.1-mini,conditional_fallback,HTTP429 credit_balance_exhausted,mock_only,mock_only,mock_only,mock_only,mock_only,not_verified,실제 정상 응답·사진·JSON·사용량 미검증,conditional_candidate
