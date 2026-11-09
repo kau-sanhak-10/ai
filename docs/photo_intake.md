@@ -34,4 +34,6 @@ PHOTO_OCR_MODELS_DIR=/models
 
 2 vCPU로 제한한 Linux 컨테이너에서 S3 다운로드만 사진 파일로 대체하고, YOLO·OCR과 FastAPI 응답은 실제로 실행했다. 기존 샘플 사진 10장 모두 HTTP 200과 올바른 사진 근거 ID를 반환했다. 워밍업 이후 2.5~24.0초, 중앙값 약 9.8초, 컨테이너 최대 메모리 약 834 MiB였다. 제조사 7건과 본체 모델 문자열 1건을 출력했으며, 모델 문자열은 글자 오독이 있었고 이 표본의 오류코드는 확정하지 못했다. 독립 정확도 평가가 아니며, 실제 S3·Bedrock·Spring을 합친 요청은 검증하지 않았다. 사진 분석만으로 24초에 근접한 사례가 있어 Dev에서 전체 시간 제한을 먼저 확인한다.
 
+병렬화 후에는 원본 PNG 10장에 3초의 모의 Bedrock 응답을 붙여 2 vCPU·2 GiB에서 다시 시험했다. 10건 모두 HTTP 200이었고, 3.02~16.39초(중앙값 4.49초), 제조사 확인 7건이었다. 모델명·오류코드는 이 실행에서 확정하지 못했다. cgroup 피크는 10건 실행 2,035 MiB, 느린 3건만 재실행했을 때 778 MiB로 편차가 있었다. 실제 Dev에서 콜드 스타트·연속 사용 시 메모리를 확인하고, 시연에는 새 사진을 한 장씩 보낸다.
+
 모델 출처: [Ultralytics YOLOE](https://docs.ultralytics.com/models/yoloe/) · [PaddleOCR 경량 글자 탐지](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det)
