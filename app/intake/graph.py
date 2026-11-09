@@ -166,8 +166,15 @@ def build_workflow(
         processed = set(state["request"].processedPhotoIds)
         return [photo for photo in state["request"].photos if photo.photoId not in processed]
 
+    def needs_immediate_owner(state: IntakeState) -> bool:
+        return state["safety"].flag or state["intent"] in {"ASK_OWNER", "CALLBACK"}
+
     def needs_image(state: IntakeState) -> str:
-        return "analyze_image" if pending_photos(state) else "merge_facts"
+        return (
+            "analyze_image"
+            if not needs_immediate_owner(state) and pending_photos(state)
+            else "merge_facts"
+        )
 
     def image_update(state: IntakeState, outputs: list[tuple[int, Understanding | None]]) -> dict:
         observations = []
@@ -201,20 +208,22 @@ def build_workflow(
         return outputs
 
     async def aextract_inputs(state: IntakeState) -> dict:
+        known = message_update(state, Understanding())
+        if needs_immediate_owner(known):
+            return known
         photos = pending_photos(state)
         if not photos:
             return await aextract_message(state)
-        # 두 분석은 독립적이지만 안전 신호와 근거의 적용 순서는 기존과 동일하다.
-        tasks = (
-            asyncio.create_task(aextract_message(state)),
-            asyncio.create_task(aanalyze_photos(photos)),
-        )
+        # 사진은 함께 시작하지만 텍스트의 안전·이관 결정은 OCR을 기다리지 않는다.
+        photo_task = asyncio.create_task(aanalyze_photos(photos))
         try:
-            message, outputs = await asyncio.gather(*tasks)
+            message = await aextract_message(state)
+            if needs_immediate_owner(message):
+                return message
+            outputs = await photo_task
         finally:
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            photo_task.cancel()
+            await asyncio.gather(photo_task, return_exceptions=True)
         image = image_update({**state, **message}, outputs)
         return {**message, **image, "observations": message["observations"] + image["observations"]}
 

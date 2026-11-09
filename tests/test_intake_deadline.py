@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.intake.bedrock_provider import BedrockExtractionProvider
-from app.intake.contracts import CategoryDecision, Evidence, RawObservation, Understanding
+from app.intake.contracts import CategoryDecision, Evidence, RawObservation, Safety, Understanding
 from app.intake.providers import ExtractedValue, ModelOutput
 from app.main import create_app
 from tests.bedrock_fakes import bedrock_response, sdk_client, sdk_session
@@ -206,6 +206,51 @@ def test_text_and_new_photo_start_before_either_finishes(monkeypatch):
     assert response.json()["result"]["analyzedPhotoIds"] == [56]
 
 
+@pytest.mark.parametrize("case", ["direct_request", "known_safety", "detected_safety"])
+def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
+    monkeypatch.setenv("INTERNAL_KEY", "unit-test")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "1")
+    get_settings.cache_clear()
+
+    class UrgentProvider(FakeProvider):
+        photo_started = asyncio.Event()
+        photo_cancelled = False
+
+        async def aextract_message(self, messages):
+            assert case == "detected_safety"
+            await self.photo_started.wait()
+            return Understanding(safety=Safety(flag=True, reasons=["SAFETY"]))
+
+        async def aanalyze_image(self, photo):
+            self.photo_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.photo_cancelled = True
+                raise
+
+    provider = UrgentProvider()
+    req = payload(photos=[{"photoId": 56, "messageId": 900, "imageUrl": "https://example.org/x"}])
+    if case == "direct_request":
+        req.messages[0].content = "사장님과 통화하고 싶어요."
+    req.safetyFlag = case == "known_safety"
+    with patch("app.api.inquiries.BedrockExtractionProvider", return_value=provider):
+        response = TestClient(create_app()).post(
+            "/internal/v1/inquiries/analyze",
+            json=req.model_dump(mode="json"),
+            headers={"X-Internal-Key": "unit-test"},
+        )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["nextAction"]["action"] == "ESCALATE_TO_OWNER"
+    assert result["safety"]["flag"] == (case != "direct_request")
+    assert result["analyzedPhotoIds"] == []
+    assert (
+        provider.photo_started.is_set() == provider.photo_cancelled == (case == "detected_safety")
+    )
+
+
 @pytest.mark.parametrize("seconds", [0, -1, 30, 31])
 def test_deadline_must_be_positive_and_less_than_spring_timeout(seconds):
     with pytest.raises(ValidationError):
@@ -233,14 +278,9 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
             self.finished = []
             self.active = set()
             self.cancelled = []
-            self.text_cancelled = False
 
         async def aextract_message(self, messages):
-            try:
-                await asyncio.Future()
-            except asyncio.CancelledError:
-                self.text_cancelled = True
-                raise
+            return super().extract_message(messages)
 
         async def aanalyze_image(self, photo):
             self.started.append(photo.photoId)
@@ -279,7 +319,6 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
     assert provider.started == [56, 57]
     assert provider.finished == [56]
     assert provider.active == set()
-    assert provider.text_cancelled
     assert provider.cancelled == ([57] if failure == "timeout" else [])
     assert req.processedPhotoIds == []
 
