@@ -5,11 +5,13 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.intake.contracts import Message
+from app.intake.contracts import CategoryDecision, Message
 from app.intake.photo_vision import decode_photo, unreadable_target, validate_s3_photo_url
+from app.intake.providers import ExtractedValue, ModelOutput
 from app.intake.vision_rules import extract
 from app.intake.vision_text import extract_with_text
 from app.main import create_app
+from tests.bedrock_fakes import sdk_client, sdk_session
 from tests.test_intake_graph import payload
 
 BUCKET = "ilro-test-photos"
@@ -127,6 +129,47 @@ def test_controller_label_row_does_not_overwrite_boiler_or_display():
         None,
         "A6",
     )
+
+
+def test_corrupt_photo_preserves_text_and_does_not_force_handoff(monkeypatch):
+    monkeypatch.setenv("INTERNAL_KEY", "internal-test-key")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "text-model")
+    monkeypatch.setenv("PHOTO_S3_BUCKET", BUCKET)
+    monkeypatch.setenv("PHOTO_YOLO_MODEL", "test.pt")
+    monkeypatch.setenv("PHOTO_OCR_MODELS_DIR", "models")
+    fetch = Mock(return_value=b"\x89PNG\r\n\x1a\n" + b"broken")
+    monkeypatch.setattr("app.intake.photo_vision.fetch_photo", fetch)
+    text = ModelOutput(
+        values=[
+            ExtractedValue(
+                fieldKey="symptom", value="온수가 안 나와요", observedText="온수가 안 나와요"
+            )
+        ],
+        workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"),
+    )
+    monkeypatch.setattr("boto3.session.Session", lambda: sdk_session(sdk_client(text)))
+    infer = Mock(side_effect=AssertionError("invalid image bytes must not reach the models"))
+    monkeypatch.setattr("app.intake.photo_vision._engines", infer)
+    request = payload(photos=[{"photoId": 27, "messageId": 900, "imageUrl": URL}])
+    request.messages[0].content = "온수가 안 나와요."
+    headers = {"X-Internal-Key": "internal-test-key"}
+    path = "/internal/v1/inquiries/analyze"
+    client = TestClient(create_app())
+    first = client.post(path, json=request.model_dump(mode="json"), headers=headers)
+    assert first.status_code == 200
+    result = first.json()["result"]
+    assert result["nextAction"]["action"] == "CHECK_SCHEDULE"
+    assert [(f["fieldKey"], f["source"]) for f in result["facts"]] == [("symptom", "CUSTOMER")]
+    assert result["photoGuidance"] == [
+        {"photoId": 27, "target": "UNKNOWN", "reason": "FILE_UNREADABLE"}
+    ]
+    assert "다시 보내지 않아도" in result["reply"]["content"]
+    assert result["analyzedPhotoIds"] == [27]
+    request.processedPhotoIds = [27]
+    retry = client.post(path, json=request.model_dump(mode="json"), headers=headers)
+    assert retry.status_code == 200 and retry.json()["result"]["photoGuidance"] == []
+    fetch.assert_called_once()
+    infer.assert_not_called()
 
 
 def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):

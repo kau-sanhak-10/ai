@@ -94,7 +94,7 @@ def fetch_photo(url: str, bucket: str, region: str, remaining: Callable[[], floa
     return bytes(data)
 
 
-def decode_photo(data: bytes) -> Image.Image:
+def decode_photo(data: bytes) -> Image.Image | None:
     try:
         with Image.open(BytesIO(data)) as original:
             if (
@@ -108,8 +108,11 @@ def decode_photo(data: bytes) -> Image.Image:
             rgba = image.convert("RGBA")
             rgb.paste(rgba, mask=rgba.getchannel("A"))
             return rgb
-    except (OSError, Image.DecompressionBombError) as exc:
+    except Image.DecompressionBombError as exc:
         raise BusinessException(ErrorCode.INVALID_INPUT) from exc
+    except (OSError, SyntaxError):
+        # 받은 파일 자체가 깨진 경우에는 사진을 판독할 수 없지만 상담은 계속한다.
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -380,6 +383,12 @@ def analyze_photo(
         )
         image = decode_photo(data)
         remaining()
+        if image is None:
+            return Understanding(
+                photoGuidance=PhotoGuidance(
+                    photoId=photo.photoId, target="UNKNOWN", reason="FILE_UNREADABLE"
+                )
+            )
         detector, reader = _engines(
             settings.photo_yolo_model,
             settings.photo_yolo_prompts,

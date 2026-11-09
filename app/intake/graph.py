@@ -638,7 +638,10 @@ def build_workflow(
                     "SMALL_TEXT": f"{target_label}의 글자가 크게 보이도록 가까이 찍어 주세요.",
                     "BLUR_LIKELY": f"{target_label}에 초점을 맞추고 흔들리지 않게 찍어 주세요.",
                     "UNREADABLE": f"{target_label} 글자가 선명하게 보이도록 찍어 주세요.",
+                    "FILE_UNREADABLE": "정상적으로 열리는 JPG·PNG 사진을 골라 주세요.",
                 }[guidance.reason]
+                if guidance.reason == "FILE_UNREADABLE":
+                    content += " 첨부한 사진 파일을 읽지 못했어요."
                 content += (
                     f" 사진을 다시 보낼 수 있다면 {retake}"
                     " 다시 보내지 않아도 상담을 계속할 수 있어요."

@@ -193,7 +193,9 @@ class IntentEvidence(ContractModel):
 class PhotoGuidance(ContractModel):
     photoId: int = Field(gt=0)
     target: Literal["LABEL", "DISPLAY", "UNKNOWN"]
-    reason: Literal["TARGET_NOT_VISIBLE", "SMALL_TEXT", "BLUR_LIKELY", "UNREADABLE"]
+    reason: Literal[
+        "TARGET_NOT_VISIBLE", "SMALL_TEXT", "BLUR_LIKELY", "UNREADABLE", "FILE_UNREADABLE"
+    ]
 
 
 class AnalyzeResult(ContractModel):
