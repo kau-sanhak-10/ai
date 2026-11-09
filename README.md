@@ -79,17 +79,6 @@ uv run pytest           # 테스트
 - `develop` 대상으로 PR을 열고 리뷰 1명 승인 후 Squash and merge 합니다.
 - `.env`, API 키, 고객 개인정보·사진은 커밋하지 않습니다.
 
-## DS-05 내부 문의 분석
-
-- 경로: `POST /internal/v1/inquiries/analyze` (Spring 전용 `X-Internal-Key` 필수)
-- 실행 설정: `INTERNAL_KEY`, `BEDROCK_MODEL_ID`, AWS 리전과 실행 역할. Spring과 AI의 내부 키는 동일하게 설정합니다. AWS 키는 배포 이미지에 넣지 않습니다.
-- **모델 접근 권한이 없으면 502 `AI_MODEL_ERROR`** (직접 API나 가짜 응답으로 대체하지 않음)
-- 전체 분석 시간은 `INTAKE_TIMEOUT_SECONDS`(기본 25초, 30초 미만)로 제한하며 초과 시 504 `AI_MODEL_TIMEOUT`을 반환합니다.
-- 모호한 증상은 `UNCONFIRMED / NOT_PROVIDED`로 반환하고, 연결 의도는 최신 고객 원문의 `intentEvidence`로 검증합니다.
-- Spring은 신규 사진을 `photos`로 보내고 처리 이력은 `processedPhotoIds`로 전달합니다. [사진 분석 설정](docs/photo_intake.md)을 적용하면 YOLO·OCR·규칙으로 로컬 판독합니다. 사진·URL은 Bedrock에 보내지 않고, 판독을 마친 경우에만 `analyzedPhotoIds`를 반환합니다.
-- 구조/Graph/Mock 테스트: `tests/test_intake_*.py`
-- 상세 설계, 책임 경계, 미구현 항목: [`docs/DS05_intake_graph.md`](docs/DS05_intake_graph.md)
-
 ## AI-02 대화·정보 추출·추가 질문
 
 현재 접수정보·출처·항목별 보완 횟수와 이전 AI 질문을 포함한 대화를 한 번의 문자 분석
@@ -102,5 +91,5 @@ uv run pytest           # 테스트
 구현 범위·실행 예시·명세 차이·남은 실제 연동 검증은
 [`docs/AI02_conversation.md`](docs/AI02_conversation.md)를 참고하세요.
 
-Spring은 분석 결과를 적용하기 전에 입력 버전·응대 주체를 재확인하고, 프론트와 Spring만
-예약 가능시간 조회·선택·확정 API를 처리합니다. AI 서버는 예약을 생성하지 않습니다.
+Dev 연동과 사진 분석 설정은 [Dev 점검 절차](docs/dev_intake_check.md)와
+[사진 분석 안내](docs/photo_intake.md)를 참고하세요.
