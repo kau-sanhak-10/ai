@@ -116,7 +116,7 @@ def decode_photo(data: bytes) -> Image.Image | None:
 
 
 @lru_cache(maxsize=1)
-def _engines(model_path: Path, prompts: Path | None, ocr_dir: Path):
+def _engines(model_path: Path, prompts: Path | None, ocr_dir: Path, cpu_threads: int):
     detector_path = ocr_dir / "PP-OCRv5_mobile_det"
     reader_path = ocr_dir / "korean_PP-OCRv5_mobile_rec"
     for path in (model_path, *(p / "inference.pdiparams" for p in (detector_path, reader_path))):
@@ -127,14 +127,14 @@ def _engines(model_path: Path, prompts: Path | None, ocr_dir: Path):
     os.environ.setdefault("YOLO_AUTOINSTALL", "False")
     os.environ.setdefault("YOLO_OFFLINE", "true")
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-    os.environ.setdefault("OMP_NUM_THREADS", "2")
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", "2")
+    os.environ.setdefault("OMP_NUM_THREADS", str(cpu_threads))
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", str(cpu_threads))
     import cv2
     import torch
     from paddleocr import PaddleOCR
     from ultralytics import YOLO, YOLOE
 
-    torch.set_num_threads(2)
+    torch.set_num_threads(cpu_threads)
     cv2.setNumThreads(1)
     detector = YOLOE(str(model_path)) if prompts is not None else YOLO(str(model_path))
     if prompts is not None:
@@ -151,7 +151,7 @@ def _engines(model_path: Path, prompts: Path | None, ocr_dir: Path):
         text_recognition_model_name="korean_PP-OCRv5_mobile_rec",
         text_recognition_model_dir=str(reader_path),
         device="cpu",
-        cpu_threads=2,
+        cpu_threads=cpu_threads,
         enable_mkldnn=False,
         text_det_limit_type="max",
         text_det_limit_side_len=960,
@@ -217,12 +217,18 @@ def unreadable_target(
     return {"target": target, "reason": "UNREADABLE"}
 
 
-def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[], float]) -> dict:
+def extract_pixels(
+    image: Image.Image, detector, reader, remaining: Callable[[], float], cpu_threads: int
+) -> dict:
     """YOLO 영역과 OCR 상자의 좌표를 같은 사진 위에서 대조한다."""
     import numpy as np
+    import torch
 
     width, height = image.size
     remaining()
+    # 워밍업과 요청 처리는 다른 스레드에서 실행될 수 있다.
+    if torch.get_num_threads() != cpu_threads:
+        torch.set_num_threads(cpu_threads)
     output = detector.predict(source=image, conf=0.15, imgsz=640, device="cpu", verbose=False)[0]
     detections = []
     for box in output.boxes:
@@ -393,8 +399,9 @@ def analyze_photo(
             settings.photo_yolo_model,
             settings.photo_yolo_prompts,
             settings.photo_ocr_models_dir,
+            settings.photo_cpu_threads,
         )
-        result = extract_pixels(image, detector, reader, remaining)
+        result = extract_pixels(image, detector, reader, remaining, settings.photo_cpu_threads)
         remaining()
         return photo_observations(result, photo.photoId)
     finally:
@@ -404,6 +411,15 @@ def analyze_photo(
 def warm_vision(settings: Settings) -> None:
     assert settings.photo_yolo_model and settings.photo_ocr_models_dir
     detector, reader = _engines(
-        settings.photo_yolo_model, settings.photo_yolo_prompts, settings.photo_ocr_models_dir
+        settings.photo_yolo_model,
+        settings.photo_yolo_prompts,
+        settings.photo_ocr_models_dir,
+        settings.photo_cpu_threads,
     )
-    extract_pixels(Image.new("RGB", (640, 640), "white"), detector, reader, lambda: None)
+    extract_pixels(
+        Image.new("RGB", (640, 640), "white"),
+        detector,
+        reader,
+        lambda: None,
+        settings.photo_cpu_threads,
+    )

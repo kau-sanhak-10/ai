@@ -11,6 +11,7 @@ import asyncio
 import operator
 import re
 from collections.abc import Callable
+from itertools import takewhile
 from typing import Annotated, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -115,7 +116,11 @@ def build_workflow(
                 "safety": Safety(flag=state["request"].safetyFlag, reasons=[]),
             }
         latest = customer_messages[-1]
-        gas_report = reports_possible_gas_leak(latest.content)
+        # 새 사진이나 후속 문장이 먼저 저장돼도 미응답 안전 신고를 놓치지 않는다.
+        unanswered = takewhile(
+            lambda m: m.sender == "CUSTOMER", reversed(state["request"].messages)
+        )
+        gas_report = any(reports_possible_gas_leak(message.content) for message in unanswered)
         safety_reasons = [reason for reason in raw.safety.reasons if reason != GAS_LEAK_REASON]
         if gas_report:
             safety_reasons.append(GAS_LEAK_REASON)

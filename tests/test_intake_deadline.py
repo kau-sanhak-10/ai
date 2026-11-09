@@ -11,12 +11,19 @@ from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 from app.intake.bedrock_provider import BedrockExtractionProvider
-from app.intake.contracts import CategoryDecision, Evidence, RawObservation, Safety, Understanding
+from app.intake.contracts import (
+    CategoryDecision,
+    Evidence,
+    Message,
+    RawObservation,
+    Safety,
+    Understanding,
+)
 from app.intake.providers import ExtractedValue, ModelOutput
 from app.intake.symptom_rules import reports_possible_gas_leak
 from app.main import create_app
 from tests.bedrock_fakes import bedrock_response, sdk_client, sdk_session
-from tests.test_intake_graph import FakeProvider, payload, symptom
+from tests.test_intake_graph import FakeProvider, payload, run, symptom
 
 
 class SlowAsyncProvider(FakeProvider):
@@ -208,7 +215,14 @@ def test_text_and_new_photo_start_before_either_finishes(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "case", ["direct_request", "known_safety", "detected_safety", "gas_report"]
+    "case",
+    [
+        "direct_request",
+        "known_safety",
+        "detected_safety",
+        "gas_report",
+        "gas_report_followed_by_photo",
+    ],
 )
 def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
@@ -237,8 +251,15 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     req = payload(photos=[{"photoId": 56, "messageId": 900, "imageUrl": "https://example.org/x"}])
     if case == "direct_request":
         req.messages[0].content = "사장님과 통화하고 싶어요."
-    if case == "gas_report":
+    if case.startswith("gas_report"):
         req.messages[0].content = "보일러 있는 곳에서 가스 냄새가 나요. 어떻게 하죠?"
+    if case == "gas_report_followed_by_photo":
+        req.messages.append(
+            Message(
+                messageId=901, sender="CUSTOMER", content="", createdAt=req.messages[0].createdAt
+            )
+        )
+        req.photos[0].messageId = 901
     req.safetyFlag = case == "known_safety"
     with patch("app.api.inquiries.BedrockExtractionProvider", return_value=provider):
         response = TestClient(create_app()).post(
@@ -251,7 +272,7 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     assert result["nextAction"]["action"] == "ESCALATE_TO_OWNER"
     assert result["safety"]["flag"] == (case != "direct_request")
     assert result["analyzedPhotoIds"] == []
-    if case == "gas_report":
+    if case.startswith("gas_report"):
         assert result["nextAction"]["ruleReason"] == "SAFETY"
         assert result["safety"]["reasons"] == ["POSSIBLE_GAS_LEAK"]
         assert "안전한 곳에서 119" in result["reply"]["content"]
@@ -272,6 +293,28 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
 )
 def test_non_reports_do_not_force_gas_handoff(text):
     assert not reports_possible_gas_leak(text)
+
+
+def test_already_answered_gas_report_does_not_override_new_turn():
+    messages = [
+        ("CUSTOMER", "가스 냄새가 나요."),
+        ("OWNER", "안전 확인을 마쳤어요."),
+        ("CUSTOMER", "온수가 안 나와요."),
+    ]
+    request = payload(
+        messages=[
+            {
+                "messageId": index,
+                "sender": sender,
+                "content": text,
+                "createdAt": "2026-11-10T00:00:00+09:00",
+            }
+            for index, (sender, text) in enumerate(messages, 1)
+        ]
+    )
+    result = run(request, FakeProvider())
+    assert not result.safety.flag
+    assert result.nextAction.ruleReason != "SAFETY"
 
 
 @pytest.mark.parametrize("seconds", [0, -1, 30, 31])

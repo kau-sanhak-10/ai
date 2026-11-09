@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     photo_yolo_model: Path | None = None
     photo_yolo_prompts: Path | None = None
     photo_ocr_models_dir: Path | None = None
+    photo_cpu_threads: int = Field(default=2, ge=1)
     # Spring 시도당 30초보다 짧게 유지한다. 문자·사진 전체가 공유하고 내부 재시도는 없다.
     intake_timeout_seconds: float = Field(default=25.0, gt=0, lt=30)
 

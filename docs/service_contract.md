@@ -1,13 +1,14 @@
 # 서비스 연동 기준 · 2026-10-26
 
 기준: [접수·인증·예약 정책서](https://app.notion.com/p/3f424a392ba98119a45ff7a5561f87dd),
-[API 명세](https://app.notion.com/p/abb24a392ba982e385f6818e70436b3e).
+[API 명세](https://app.notion.com/p/abb24a392ba982e385f6818e70436b3e),
+[중간발표 시연 범위와 AI 경로 결정](https://app.notion.com/p/41124a392ba980a1a10cefd12dce5fdd).
 
 ## 현재 코드와 서비스 경계
 
-`app/llm`은 IF-13의 제공사 접근·추출 검증 코드다. LangGraph 멀티턴이나
-`/internal/v1/inquiries/analyze` 서비스 엔드포인트가 구현 완료된 것은 아니다.
-`needs_review`는 추출 결과 검토 신호이며 예약 차단·사장님 이관 명령이 아니다.
+`app/llm`은 IF-13의 제공사 접근·추출 비교 실험이다. 실제 접수는
+`/internal/v1/inquiries/analyze`에서 LangGraph로 처리한다. 로컬 구현과 공유 Dev 통합 검증은 구분한다.
+실험 코드의 `needs_review`는 예약 차단·사장님 이관 명령이 아니며,
 `unobserved_fields`는 사진·문자에서 관측하지 못한 항목이다.
 기본적으로 제조사·모델명·오류코드·주소를 공통 필수값으로 취급하지 않는다.
 
@@ -34,11 +35,10 @@
 
 ## 사진 분석과 모델 호출
 
-모델 호출 기반은 Bedrock으로 맞춘다. 이미지 입력 지원 멀티모달 모델과 별도 실행 환경의
-YOLO+OCR+룰을 계속 비교·개선한다. Bedrock 자체가 YOLO·OCR 실행 환경인 것은 아니다.
-두 경로는 동일한 항목·사진 근거·미확인 이유를 반환한다. 정확도·없는 값 생성·지연·전체 비용으로
-적용 경로를 선택하며 매 사진에 두 경로를 모두 실행하지 않는다. 모델·리전·접근 권한·비용은 실제 호출로 확인한다.
-기존 Gemini/OpenAI 코드는 직접 API 실험 기준선이다. Bedrock 연동 완료로 간주하지 않는다.
+현재 접수 서비스는 대화·증상 추출에 Bedrock 텍스트 모델을, 사진 판독에 FastAPI의
+YOLO+OCR+룰을 사용한다. Bedrock에는 사진이나 서명 URL을 전달하지 않는다.
+사진의 확인값·미확인 사유·근거 ID는 공통 응답으로 반환한다. 멀티모달·Gemini/OpenAI 직접 호출은
+기존 비교 실험으로만 보존하며, 실제 Bedrock 모델·리전·접근 권한·비용은 공유 Dev에서 확인한다.
 
 ## 예약과 재시도 책임
 

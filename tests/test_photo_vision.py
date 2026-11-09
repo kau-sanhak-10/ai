@@ -1,4 +1,6 @@
+import sys
 from io import BytesIO
+from threading import Event
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -6,7 +8,12 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.intake.contracts import CategoryDecision, Message
-from app.intake.photo_vision import decode_photo, unreadable_target, validate_s3_photo_url
+from app.intake.photo_vision import (
+    decode_photo,
+    extract_pixels,
+    unreadable_target,
+    validate_s3_photo_url,
+)
 from app.intake.providers import ExtractedValue, ModelOutput
 from app.intake.vision_rules import extract
 from app.intake.vision_text import extract_with_text
@@ -170,6 +177,55 @@ def test_corrupt_photo_preserves_text_and_does_not_force_handoff(monkeypatch):
     assert retry.status_code == 200 and retry.json()["result"]["photoGuidance"] == []
     fetch.assert_called_once()
     infer.assert_not_called()
+
+
+def test_photo_timeout_does_not_wait_for_running_ocr(monkeypatch):
+    monkeypatch.setenv("INTERNAL_KEY", "internal-test-key")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "text-model")
+    monkeypatch.setenv("PHOTO_S3_BUCKET", BUCKET)
+    monkeypatch.setenv("PHOTO_YOLO_MODEL", "test.pt")
+    monkeypatch.setenv("PHOTO_OCR_MODELS_DIR", "models")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "1")
+    started, release, finished = Event(), Event(), Event()
+
+    def blocked_ocr(*args, **kwargs):
+        started.set()
+        release.wait(5)
+        finished.set()
+
+    monkeypatch.setattr("app.api.inquiries.analyze_photo", blocked_ocr)
+    request = payload(photos=[{"photoId": 27, "messageId": 900, "imageUrl": URL}])
+    request.messages[0].content = ""
+    try:
+        response = TestClient(create_app()).post(
+            "/internal/v1/inquiries/analyze",
+            json=request.model_dump(mode="json"),
+            headers={"X-Internal-Key": "internal-test-key"},
+        )
+        assert started.is_set() and not finished.is_set()
+        assert response.status_code == 504
+        assert response.json()["code"] == "AI_MODEL_TIMEOUT"
+        assert response.json()["result"] is None
+    finally:
+        release.set()
+        if started.is_set():
+            assert finished.wait(2)
+
+
+def test_worker_applies_thread_limit_before_yolo(monkeypatch):
+    torch = Mock()
+    torch.get_num_threads.return_value = 8
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(sys.modules, "numpy", Mock())
+    detector = Mock()
+
+    def predict(**kwargs):
+        torch.set_num_threads.assert_called_once_with(1)
+        raise RuntimeError("end of thread-limit probe")
+
+    detector.predict.side_effect = predict
+    with pytest.raises(RuntimeError, match="end of thread-limit probe"):
+        extract_pixels(Image.new("RGB", (24, 24)), detector, None, lambda: None, 1)
 
 
 def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
