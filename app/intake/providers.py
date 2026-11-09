@@ -1,7 +1,7 @@
 """AI-02~06의 호출 인터페이스. 기존 CLI 추출 실험 코드는 변경하지 않는다.
 
-Bedrock 모델/리전/권한과 YOLO/OCR 환경은 아직 검증 전이므로 여기에 임의로
-연결하지 않는다. 개발된 OpenAI 직접 API 경로를 기본 LLM 호출로 활용한다.
+서비스는 Bedrock 어댑터를 주입한다. 기존 OpenAI 직접 API 실험 경로도 유지한다.
+모델별 SDK 호출과 공통 근거 검증을 분리한다.
 """
 
 from __future__ import annotations
@@ -105,68 +105,23 @@ def validate_photo_url(url: str) -> None:
 class ExtractionProvider(Protocol):
     def extract_message(self, messages: list[Message]) -> Understanding: ...
 
-    def analyze_image(self, photo: Photo) -> Understanding: ...
+    def analyze_image(self, photo: Photo) -> Understanding | None: ...
 
 
 class AsyncExtractionProvider(ExtractionProvider, Protocol):
     async def aextract_message(self, messages: list[Message]) -> Understanding: ...
 
-    async def aanalyze_image(self, photo: Photo) -> Understanding: ...
+    async def aanalyze_image(self, photo: Photo) -> Understanding | None: ...
 
 
-class OpenAIExtractionProvider:
-    """기존 레포가 검증한 OpenAI Responses.parse SDK의 서비스용 어댑터."""
-
-    def __init__(self, api_key: str, model: str, *, timeout_seconds: float = 25.0):
-        self.api_key = api_key
-        self.model = model
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.timeout_seconds = timeout_seconds
-        self.model_calls = 0
-        self.usage_reported_calls = 0
-
-    def _capture_usage(self, response: object) -> None:
-        usage = getattr(response, "usage", None)
-        if usage is not None:
-            self.usage_reported_calls += 1
-        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
-        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
-
-    def _validated_output(self, response: object) -> ModelOutput:
-        self._capture_usage(response)
-        if response.output_parsed is None:
-            raise ValueError("LLM 구조화 출력이 비어 있습니다")
-        return ModelOutput.model_validate(response.output_parsed)
+class StructuredExtractionProvider:
+    """모델 호출 결과를 기존 문자·사진 근거 계약으로 변환한다."""
 
     def _parse(self, instructions: str, content: list[dict]) -> ModelOutput:
-        from openai import OpenAI
-
-        with OpenAI(api_key=self.api_key, timeout=self.timeout_seconds, max_retries=0) as client:
-            # API 명세 6.4: 동일 입력의 재시도는 Spring에서만 관리한다.
-            self.model_calls += 1
-            response = client.responses.parse(
-                model=self.model,
-                instructions=instructions,
-                input=[{"role": "user", "content": content}],
-                text_format=ModelOutput,
-            )
-            return self._validated_output(response)
+        raise NotImplementedError
 
     async def _aparse(self, instructions: str, content: list[dict]) -> ModelOutput:
-        from openai import AsyncOpenAI
-
-        async with AsyncOpenAI(
-            api_key=self.api_key, timeout=self.timeout_seconds, max_retries=0
-        ) as client:
-            self.model_calls += 1
-            response = await client.responses.parse(
-                model=self.model,
-                instructions=instructions,
-                input=[{"role": "user", "content": content}],
-                text_format=ModelOutput,
-            )
-            return self._validated_output(response)
+        raise NotImplementedError
 
     def extract_message(self, messages: list[Message]) -> Understanding:
         # 이전 정보가 사라지지 않도록 전체 고객 발화를 함께 읽되, 근거 ID는 실제 문장으로 검증한다.
@@ -279,3 +234,58 @@ class OpenAIExtractionProvider:
                     )
                 )
         return Understanding(observations=observations, safety=output.safety)
+
+
+class OpenAIExtractionProvider(StructuredExtractionProvider):
+    """기존 레포가 검증한 OpenAI Responses.parse SDK의 서비스용 어댑터."""
+
+    def __init__(self, api_key: str, model: str, *, timeout_seconds: float = 25.0):
+        self.api_key = api_key
+        self.model = model
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.timeout_seconds = timeout_seconds
+        self.model_calls = 0
+        self.usage_reported_calls = 0
+
+    def _capture_usage(self, response: object) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.usage_reported_calls += 1
+        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
+        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
+
+    def _validated_output(self, response: object) -> ModelOutput:
+        self._capture_usage(response)
+        if response.output_parsed is None:
+            raise ValueError("LLM 구조화 출력이 비어 있습니다")
+        return ModelOutput.model_validate(response.output_parsed)
+
+    def _parse(self, instructions: str, content: list[dict]) -> ModelOutput:
+        from openai import OpenAI
+
+        with OpenAI(api_key=self.api_key, timeout=self.timeout_seconds, max_retries=0) as client:
+            # API 명세 6.4: 동일 입력의 재시도는 Spring에서만 관리한다.
+            self.model_calls += 1
+            response = client.responses.parse(
+                model=self.model,
+                instructions=instructions,
+                input=[{"role": "user", "content": content}],
+                text_format=ModelOutput,
+            )
+            return self._validated_output(response)
+
+    async def _aparse(self, instructions: str, content: list[dict]) -> ModelOutput:
+        from openai import AsyncOpenAI
+
+        async with AsyncOpenAI(
+            api_key=self.api_key, timeout=self.timeout_seconds, max_retries=0
+        ) as client:
+            self.model_calls += 1
+            response = await client.responses.parse(
+                model=self.model,
+                instructions=instructions,
+                input=[{"role": "user", "content": content}],
+                text_format=ModelOutput,
+            )
+            return self._validated_output(response)

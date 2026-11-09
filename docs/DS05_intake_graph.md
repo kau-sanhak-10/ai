@@ -1,7 +1,7 @@
 # DS-05 · AI 입출력 / LangGraph 처리 흐름 (WBS 범위)
 
 갱신일: 2026-11-06. 기준: `api-명세서_version2.txt` 6장 및 10/26 확정 운영 기준.
-구현 대조 기준: `feat/#6-LangGraph`의 기존 구현과 PR 피드백 1~3번 후속 수정. 모델 선택·Bedrock 전환(피드백 4번)은 팀 합의 후 별도 반영한다.
+구현 대조 기준: LangGraph 및 문의 판단 PR을 바탕으로 Bedrock 텍스트 경로를 반영했다. 실제 Dev 호출과 YOLO·OCR 사진 연결은 별도 검증한다.
 
 ## 담당 시스템과 범위
 
@@ -95,19 +95,19 @@ START → extract_message → (photos?) analyze_image → merge_facts
 
 ## 모델·외부 모듈 경계
 
-- **FastAPI 서비스 경로:** [app/api/inquiries.py](../app/api/inquiries.py)가 [OpenAIExtractionProvider](../app/intake/providers.py)를 생성한다. `INTERNAL_KEY`, `OPENAI_API_KEY`, `OPENAI_MODEL` 설정이 필요하다. 키·모델이 없으면 502 `AI_MODEL_ERROR`를 반환한다. 아래 Gemini 로컬 실험의 성공이 OpenAI 서비스 경로의 실제 호출 성공을 뜻하지는 않는다.
+- **FastAPI 서비스 경로:** [app/api/inquiries.py](../app/api/inquiries.py)가 [BedrockExtractionProvider](../app/intake/bedrock_provider.py)를 생성한다. `INTERNAL_KEY`, `BEDROCK_MODEL_ID`, 실행 리전과 AWS 권한이 필요하다. 모델 설정·권한이 없으면 502 `AI_MODEL_ERROR`를 반환하며 OpenAI/Gemini 실험 코드로 대체하지 않는다.
 - **로컬 Gemini 검증 경로:** [try_my_intake_gemini.py](../try_my_intake_gemini.py)의 `GeminiGraphTestProvider`를 사용한다. `GEMINI_API_KEY`, 기본 모델 ID `gemini-3.5-flash-lite`를 사용하며 `--model`로 변경할 수 있다. 텍스트와 `--image-path`로 지정한 로컬 JPG/PNG를 분석한다. 현재 FastAPI 라우터의 제공사를 Gemini로 전환한 것은 아니다.
 - Gemini 구조화 출력은 `response_json_schema=ModelOutput.model_json_schema()`로 요청하고 `ModelOutput.model_validate_json()`으로 응답을 검증한다. 문자 관찰값은 값이 `null`이거나 `observedText`가 없거나 원문에 정확히 포함되지 않으면 제외한다. `values` 누락도 현재 모델에서는 빈 목록으로 처리된다. `--debug-extraction`을 명시한 로컬 실행에서만 원시 응답·파싱 결과·제외 사유를 출력한다. 이 출력에는 분석 원문이 포함될 수 있으며 운영 로그로 사용하지 않는다.
 - **기존 직접 API 비교 기준:** `app/llm/`, [llm_api_validation.md](llm_api_validation.md), [provider_comparison.csv](provider_comparison.csv), [llm_handoff_IF02.md](llm_handoff_IF02.md)를 보존한다. 기존 API 접근 검증 보고와 이번 LangGraph 검증 범위를 구분한다.
-- **Bedrock·YOLO 비교는 후속 검증:** Bedrock 멀티모달 모델/리전/권한/비용은 실호출 전까지 확정하지 않는다. YOLO+OCR+룰은 별도 실행 환경이다. 공통 후보 구조는 `RawObservation(fieldKey,value,source,evidence,unconfirmedReason,observedText)`이고 Node는 `ExtractionProvider` 인터페이스에 의존한다. 두 경로의 정확도·없는 값 생성·처리시간·전체 비용을 비교할 계획이며 현재 연결·비교 완료 상태는 아니다. 매 사진에 두 경로를 모두 실행하지 않으며, 비교 완료를 기본 접수·예약 연결의 선행 조건으로 두지 않는다.
+- **사진은 YOLO+OCR+룰 전용:** 사진이나 임시 URL을 Bedrock에 전달하지 않는다. 현재 사진 경로의 자리에는 모델·OCR이 연결되지 않았으므로 처리 완료 ID를 만들지 않는다. 판독 결과는 `RawObservation`으로 연결하며 Spring의 저장·조회까지 검증한 뒤 사진 실연 여부를 결정한다.
 - RAG는 Node가 별도 검색 함수를 호출하는 경계만 만든다. 제공된 저장소에 매뉴얼 인덱스/검색 구현이 없어 기본 구현은 빈 결과를 반환한다. 자료가 없을 때 해석을 생성하지 않으며 임의 예제 설명서를 코드에 넣지 않는다.
 - 모델 학습·양자화·작업시간 추정·일정 계산·예약 API 호출·알림 생성·사장님 이관 상태 변경 등은 여기서 구현하지 않는다.
 
 ### 출력 검증 실패·외부 호출 실패
 
-- FastAPI는 취소 가능한 비동기 그래프와 `AsyncOpenAI`를 사용한다. 규칙 로드·문자 추출·사진 순차 분석·최종 검증에 **하나의 전체 시간 예산**을 적용한다. `INTAKE_TIMEOUT_SECONDS` 기본값은 25초이며 `0 < 값 < 30`으로 제한한다. 사진마다 예산을 새로 시작하지 않는다.
-- 제한 초과 시 진행 중 비동기 모델 호출의 로컬 대기를 취소하고 클라이언트를 정리한 뒤 504 `AI_MODEL_TIMEOUT`을 반환한다. 후속 사진을 계속 호출하거나 부분 성공 결과를 반환하지 않는다. 이는 Spring의 결과 적용 검증이나 외부 제공사 측 추론·과금 중단을 보장하는 기능은 아니다. 로컬 동기 CLI는 이 FastAPI 전체 제한의 적용 대상이 아니다.
-- OpenAI 서비스 어댑터와 로컬 Gemini 어댑터 모두 빈 출력·JSON/Pydantic 검증 실패 시 내부 재시도를 하지 않는다. API 명세 6.4에 따라 같은 입력의 재시도는 Spring에서만 관리한다. SDK 자동 재시도도 비활성화한다. 로컬 Gemini CLI의 예외는 FastAPI 오류 응답 변환을 거치지 않는다.
+- FastAPI의 비동기 그래프는 boto3 Converse를 스레드에서 호출한다. 규칙 로드·문자 추출·사진 노드·최종 검증에 **하나의 전체 시간 예산**을 적용한다. `INTAKE_TIMEOUT_SECONDS` 기본값은 25초이며 `0 < 값 < 30`으로 제한한다.
+- 제한 초과 시 로컬 대기를 취소하고 504 `AI_MODEL_TIMEOUT`을 반환한다. 실행 스레드는 호출이 종료될 때 SDK 클라이언트를 닫는다. 제공사 추론·과금 중단을 보장하지 않으며 부분 성공 결과는 반환하지 않는다.
+- Bedrock 서비스 어댑터는 호출 실패·구조화 출력 오류 시 내부 재시도를 하지 않는다. API 명세 6.4에 따라 같은 입력의 재시도는 Spring에서만 관리한다.
 - 규칙 파일은 그래프 실행 전에 로드하며, 없거나 잘못된 규칙을 임의 기본값으로 대체하지 않는다. FastAPI는 다음 오류를 공통 응답으로 반환한다.
 
 | 상황 | HTTP / 오류 코드 |
@@ -120,7 +120,7 @@ START → extract_message → (photos?) analyze_image → merge_facts
 | 전체 분석 시간 예산 초과 | 504 `AI_MODEL_TIMEOUT` |
 | 업무 규칙 파일 로드 실패 | 503 `AI_RULES_UNAVAILABLE` |
 
-구현 참고: [OpenAI Python SDK 비동기 호출](https://developers.openai.com/api/reference/python), [Python asyncio.timeout](https://docs.python.org/3.12/library/asyncio-task.html#asyncio.timeout).
+구현 참고: [AWS Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html), [Python asyncio.timeout](https://docs.python.org/3.12/library/asyncio-task.html#asyncio.timeout).
 
 ### 사진 전달·처리 이력: Spring 연동 합의안
 
@@ -188,4 +188,4 @@ Gemini 모드의 최종 `PASS`는 기본적으로 문의·버전 일치, 결과 
 2. **의도·사진 처리 계약:** 원문 근거와 요청·거절·과거 설명의 규칙을 함께 검사하지만 복잡한 중의적 표현의 의미 분류를 완전히 보장하지 않는다. 구분이 불확실하면 이관 의도를 확정하지 않는다. `intentEvidence`·`processedPhotoIds`·`analyzedPhotoIds`의 Spring 연동 및 전체 25초 제한과 실제 Spring의 30초 시도 설정의 정합성은 실환경 검증이 필요하다.
 3. **작업 유형 현재값 계약:** 요청에는 고객이 선택·수정한 작업 유형의 현재값이 별도 포함되지 않는다. 현재 그래프는 고객 발화 전체에서 매번 다시 추출한다. 고객 수정값의 우선순위·유지 방식은 Spring과 합의해야 한다.
 4. **업체별 정책·상담 문맥:** 현재 필수정보 설정은 전역 규칙 파일의 업무 유형별 설정이며 업체별 개별 정책은 없다. AI-02부터 최신 필드·출처·보완 횟수 및 AI/OWNER 질문을 포함한 대화를 함께 전달하며 고객 원문만 사실 근거로 인정한다. 모델명·사진·연식·설치 환경·비용 부담 주체를 일괄 필수화하지 않는다.
-5. **미연결 모듈:** Bedrock/YOLO 비교, 매뉴얼 인덱스, Jev 실험, 실제 Spring·프론트 왕복 흐름은 완료 범위와 분리한다. 이 문서의 구현·검증 기록만으로 WBS 전체 완료로 표시하지 않는다.
+5. **미검증 범위:** Dev Bedrock 실호출, YOLO·OCR 실사진 연동, 매뉴얼 인덱스, Jev 실험, 실제 Spring·프론트 왕복은 완료 범위와 분리한다.

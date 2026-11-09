@@ -10,6 +10,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
+COPY rules ./rules
 
 # 2단계: 실행용 (uv·빌드 도구 없이 가볍게)
 FROM python:3.12-slim

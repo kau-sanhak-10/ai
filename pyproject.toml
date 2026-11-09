@@ -5,6 +5,8 @@ description = "일로 AI 판단 서버 (FastAPI)"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
+    "anyio>=4.15.1",
+    "boto3>=1.43.126",
     "fastapi>=0.142.2",
     "google-genai>=2.32.0",
     "langgraph>=1.2.14",

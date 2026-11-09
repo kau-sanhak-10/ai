@@ -82,11 +82,11 @@ uv run pytest           # 테스트
 ## DS-05 내부 문의 분석
 
 - 경로: `POST /internal/v1/inquiries/analyze` (Spring 전용 `X-Internal-Key` 필수)
-- `.env`: `INTERNAL_KEY`, `OPENAI_API_KEY`, `OPENAI_MODEL` 설정 후 서비스 호출 가능
-- **실제 모델 접근 권한이나 키가 없으면 502 `AI_MODEL_ERROR`** (가짜 판단을 반환하지 않음)
+- 실행 설정: `INTERNAL_KEY`, `BEDROCK_MODEL_ID`, AWS 리전과 실행 역할. Spring과 AI의 내부 키는 동일하게 설정합니다. AWS 키는 배포 이미지에 넣지 않습니다.
+- **모델 접근 권한이 없으면 502 `AI_MODEL_ERROR`** (직접 API나 가짜 응답으로 대체하지 않음)
 - 전체 분석 시간은 `INTAKE_TIMEOUT_SECONDS`(기본 25초, 30초 미만)로 제한하며 초과 시 504 `AI_MODEL_TIMEOUT`을 반환합니다.
 - 모호한 증상은 `UNCONFIRMED / NOT_PROVIDED`로 반환하고, 연결 의도는 최신 고객 원문의 `intentEvidence`로 검증합니다.
-- Spring은 신규 사진만 `photos`로 보내거나 처리 이력을 `processedPhotoIds`로 전달할 수 있습니다. 성공 결과의 `analyzedPhotoIds` 저장 방식은 연동 시 합의합니다.
+- Spring은 신규 사진만 `photos`로 보내거나 처리 이력을 `processedPhotoIds`로 전달할 수 있습니다. 사진·URL은 Bedrock에 전달하지 않습니다. YOLO·OCR이 연결되지 않았으면 새 사진을 `analyzedPhotoIds`에 포함하지 않으며, 실제 판독을 마친 경우에만 처리 이력으로 저장합니다.
 - 구조/Graph/Mock 테스트: `tests/test_intake_*.py`
 - 상세 설계, 책임 경계, 미구현 항목: [`docs/DS05_intake_graph.md`](docs/DS05_intake_graph.md)
 

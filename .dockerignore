@@ -1,4 +1,4 @@
-# Docker 이미지에 넣지 않을 파일 - 빌드에 필요한 건 pyproject.toml·uv.lock·app/ 뿐
+# Docker 이미지에 넣지 않을 파일 - 빌드에는 pyproject.toml·uv.lock·app/·rules/ 필요
 .git
 .github
 .venv

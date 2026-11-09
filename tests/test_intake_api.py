@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -25,6 +26,36 @@ def test_internal_key_required(monkeypatch):
         ).status_code
         == 401
     )
+    assert (
+        client.post(
+            "/internal/v1/inquiries/analyze",
+            json=body,
+            headers=[(b"x-internal-key", b"\xe9")],
+        ).status_code
+        == 401
+    )
+
+
+def test_invalid_photo_url_rejected_before_model_call(monkeypatch):
+    monkeypatch.setenv("INTERNAL_KEY", "only-backend-knows")
+    request = payload(photos=[{"photoId": 2, "messageId": 1, "imageUrl": "https://127.0.0.1/a"}])
+    with patch("app.api.inquiries._analyze") as analyze:
+        response = TestClient(create_app()).post(
+            "/internal/v1/inquiries/analyze",
+            headers={"X-Internal-Key": "only-backend-knows"},
+            json=request.model_dump(mode="json"),
+        )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_INPUT"
+    analyze.assert_not_called()
+
+
+def test_duplicate_rules_keys_rejected(tmp_path):
+    config = tmp_path / "rules.yaml"
+    data = load_rules().model_dump_json()
+    config.write_text('{"version":"shadowed",' + data[1:], encoding="utf-8")
+    with pytest.raises(RuntimeError, match="AI_RULES_UNAVAILABLE"):
+        load_rules(config)
 
 
 def test_internal_contract_round_trip_with_mock(monkeypatch):

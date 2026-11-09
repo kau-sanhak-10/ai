@@ -1,17 +1,20 @@
 """서비스의 전체 시간 예산과 비동기 모델 호출 취소를 검증한다."""
 
 import asyncio
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+import threading
+import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
-from app.intake.contracts import CategoryDecision, Understanding
-from app.intake.providers import ExtractedValue, ModelOutput, OpenAIExtractionProvider
+from app.intake.bedrock_provider import BedrockExtractionProvider
+from app.intake.contracts import CategoryDecision, Evidence, RawObservation, Understanding
+from app.intake.providers import ExtractedValue, ModelOutput
 from app.main import create_app
+from tests.bedrock_fakes import bedrock_response, sdk_client, sdk_session
 from tests.test_intake_graph import FakeProvider, payload, symptom
 
 
@@ -43,8 +46,7 @@ class SlowAsyncProvider(FakeProvider):
 
 def test_deadline_is_shared_by_text_and_all_photos(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
     monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.25")
     get_settings.cache_clear()
     provider = SlowAsyncProvider()
@@ -54,7 +56,7 @@ def test_deadline_is_shared_by_text_and_all_photos(monkeypatch):
             for photo_id in (56, 57)
         ]
     ).model_dump(mode="json")
-    with patch("app.api.inquiries.OpenAIExtractionProvider", return_value=provider):
+    with patch("app.api.inquiries.BedrockExtractionProvider", return_value=provider):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=body,
@@ -67,92 +69,67 @@ def test_deadline_is_shared_by_text_and_all_photos(monkeypatch):
     assert provider.cancelled_photos == [56]
 
 
-def test_sdk_timeout_cancels_single_call_and_closes_client(monkeypatch):
+def test_sdk_timeout_stops_waiting_and_closes_client_after_worker_finishes(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
-    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.1")
     get_settings.cache_clear()
-    cancelled = []
+    release = threading.Event()
+    closed = threading.Event()
+    client = sdk_client()
 
-    async def slow_parse(**kwargs):
-        try:
-            await asyncio.sleep(0.4)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-        return SimpleNamespace(output_parsed=None, usage=None)
+    def slow_converse(**kwargs):
+        release.wait(3)
+        return bedrock_response(ModelOutput())
 
-    client = MagicMock()
-    client.__aenter__.return_value = client
-    client.responses.parse = AsyncMock(side_effect=slow_parse)
-    with patch("openai.AsyncOpenAI", return_value=client):
-        response = TestClient(create_app()).post(
-            "/internal/v1/inquiries/analyze",
-            json=payload().model_dump(mode="json"),
-            headers={"X-Internal-Key": "unit-test"},
-        )
-    assert response.status_code == 504
-    assert response.json()["code"] == "AI_MODEL_TIMEOUT"
-    assert client.responses.parse.await_count == 1
-    assert cancelled == [True]
-    client.__aexit__.assert_awaited_once()
+    client.converse.side_effect = slow_converse
+    client.close.side_effect = lambda *_: closed.set()
+    started = time.monotonic()
+    try:
+        with patch("boto3.session.Session", return_value=sdk_session(client)):
+            response = TestClient(create_app()).post(
+                "/internal/v1/inquiries/analyze",
+                json=payload().model_dump(mode="json"),
+                headers={"X-Internal-Key": "unit-test"},
+            )
+        assert response.status_code == 504
+        assert response.json()["code"] == "AI_MODEL_TIMEOUT"
+        assert time.monotonic() - started < 1
+        assert client.converse.call_count == 1
+        assert not closed.is_set()
+    finally:
+        release.set()
+        assert closed.wait(2)
+    client.close.assert_called_once()
 
 
 def test_async_sdk_success_parses_output_and_usage():
-    client = MagicMock()
-    client.__aenter__.return_value = client
-    client.responses.parse = AsyncMock(
-        return_value=SimpleNamespace(
-            output_parsed=ModelOutput(),
-            usage=SimpleNamespace(input_tokens=12, output_tokens=8),
-        )
-    )
-    provider = OpenAIExtractionProvider("unit-test", "unit-test-model")
-    with patch("openai.AsyncOpenAI", return_value=client) as factory:
+    client = sdk_client(ModelOutput())
+    provider = BedrockExtractionProvider("unit-test-model")
+    session = sdk_session(client)
+    with patch("boto3.session.Session", return_value=session) as factory:
         result = asyncio.run(provider._aparse("extract", [{"type": "input_text", "text": "hi"}]))
     assert result.values == []
     assert (provider.input_tokens, provider.output_tokens) == (12, 8)
-    assert factory.call_args.kwargs["max_retries"] == 0
-    client.__aexit__.assert_awaited_once()
+    factory.assert_called_once_with()
+    assert session.client.call_args.kwargs["config"].retries["total_max_attempts"] == 1
+    client.close.assert_called_once()
 
 
 def test_async_service_analyzes_only_new_photo_and_returns_grounded_facts(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
     get_settings.cache_clear()
-    client = MagicMock()
-    client.__aenter__.return_value = client
-    client.responses.parse = AsyncMock(
-        side_effect=[
-            SimpleNamespace(
-                output_parsed=ModelOutput(
-                    values=[
-                        ExtractedValue(
-                            fieldKey="symptom",
-                            value="온수가 안 나와요",
-                            observedText="온수가 안 나와요",
-                        )
-                    ],
-                    intent="ANSWER",
-                    workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"),
-                ),
-                usage=None,
-            ),
-            SimpleNamespace(
-                output_parsed=ModelOutput(
-                    values=[
-                        ExtractedValue(
-                            fieldKey="model",
-                            value="A-100",
-                            observedText="A-100",
-                        )
-                    ]
-                ),
-                usage=None,
-            ),
-        ]
+    client = sdk_client(
+        ModelOutput(
+            values=[
+                ExtractedValue(
+                    fieldKey="symptom", value="온수가 안 나와요", observedText="온수가 안 나와요"
+                )
+            ],
+            intent="ANSWER",
+            workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"),
+        ),
     )
     req = payload(
         photos=[
@@ -162,7 +139,23 @@ def test_async_service_analyzes_only_new_photo_and_returns_grounded_facts(monkey
     )
     req.messages[0].content = "온수가 안 나와요."
     req.processedPhotoIds = [56]
-    with patch("openai.AsyncOpenAI", return_value=client):
+    with (
+        patch("boto3.session.Session", return_value=sdk_session(client)),
+        patch(
+            "app.intake.bedrock_provider.BedrockExtractionProvider.aanalyze_image",
+            return_value=Understanding(
+                observations=[
+                    RawObservation(
+                        fieldKey="model",
+                        value="A-100",
+                        source="PHOTO",
+                        evidence=Evidence(photoId=57),
+                        observedText="A-100",
+                    )
+                ]
+            ),
+        ) as analyze_photo,
+    ):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=req.model_dump(mode="json"),
@@ -175,8 +168,9 @@ def test_async_service_analyzes_only_new_photo_and_returns_grounded_facts(monkey
     photo_fact = next(f for f in result["facts"] if f["fieldKey"] == "model")
     assert photo_fact["value"] == "A-100"
     assert photo_fact["evidence"]["photoId"] == 57
-    assert client.responses.parse.await_count == 2
-    assert client.__aexit__.await_count == 2
+    assert analyze_photo.await_args.args[0].photoId == 57
+    assert client.converse.call_count == 1
+    assert client.close.call_count == 1
 
 
 @pytest.mark.parametrize("seconds", [0, -1, 30, 31])
@@ -195,8 +189,7 @@ def test_deadline_must_be_positive_and_less_than_spring_timeout(seconds):
 )
 def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, failure, status, code):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
     monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.15")
     get_settings.cache_clear()
 
@@ -236,7 +229,7 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
             for photo_id in (56, 57, 58)
         ]
     )
-    with patch("app.api.inquiries.OpenAIExtractionProvider", return_value=provider):
+    with patch("app.api.inquiries.BedrockExtractionProvider", return_value=provider):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=req.model_dump(mode="json"),
@@ -254,11 +247,8 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
 
 def test_photo_format_failure_does_not_retry_or_mark_complete(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "unit-test")
-    monkeypatch.setenv("OPENAI_MODEL", "unit-test-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
     get_settings.cache_clear()
-    client = MagicMock()
-    client.__aenter__.return_value = client
     text = ModelOutput(
         values=[
             ExtractedValue(
@@ -269,13 +259,7 @@ def test_photo_format_failure_does_not_retry_or_mark_complete(monkeypatch):
         ],
         workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"),
     )
-    client.responses.parse = AsyncMock(
-        side_effect=[
-            SimpleNamespace(output_parsed=text, usage=None),
-            SimpleNamespace(output_parsed=None, usage=None),
-            SimpleNamespace(output_parsed=ModelOutput(), usage=None),
-        ]
-    )
+    client = sdk_client(text)
     req = payload(
         photos=[
             {
@@ -286,14 +270,21 @@ def test_photo_format_failure_does_not_retry_or_mark_complete(monkeypatch):
         ]
     )
     req.messages[0].content = "온수가 안 나와요."
-    with patch("openai.AsyncOpenAI", return_value=client):
+    with (
+        patch("boto3.session.Session", return_value=sdk_session(client)),
+        patch(
+            "app.intake.bedrock_provider.BedrockExtractionProvider.aanalyze_image",
+            side_effect=ValueError("invalid photo pipeline output"),
+        ) as analyze_photo,
+    ):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=req.model_dump(mode="json"),
             headers={"X-Internal-Key": "unit-test"},
         )
-    assert client.responses.parse.await_count == 2
-    assert client.__aexit__.await_count == 2
+    analyze_photo.assert_awaited_once()
+    assert client.converse.call_count == 1
+    assert client.close.call_count == 1
     assert response.status_code == 502
     assert response.json()["code"] == "AI_OUTPUT_INVALID"
     assert response.json()["result"] is None

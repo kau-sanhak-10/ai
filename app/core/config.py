@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """환경변수와 .env에서 읽는 설정. 실제 키는 .env에만 두고 커밋하지 않는다."""
+    """애플리케이션 설정. AWS 인증·리전은 boto3 기본 탐색에 맡긴다."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -25,9 +25,10 @@ class Settings(BaseSettings):
 
     # Spring → AI 전용 내부 접근 키. 프로덕션에서 반드시 설정.
     internal_key: SecretStr | None = None
-    # 실제 접근 가능한 직접 API 모델을 명시적으로 설정한다. Bedrock 모델/리전은 별도 검증.
+    # 기존 OpenAI 직접 API 실험용. FastAPI 서비스에서는 사용하지 않는다.
     openai_model: str | None = None
-    # Spring 시도당 30초보다 짧게 유지한다. 문자·사진·재시도 전체가 공유한다.
+    bedrock_model_id: str | None = None
+    # Spring 시도당 30초보다 짧게 유지한다. 문자·사진 전체가 공유하고 내부 재시도는 없다.
     intake_timeout_seconds: float = Field(default=25.0, gt=0, lt=30)
 
 

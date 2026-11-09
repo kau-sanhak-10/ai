@@ -13,7 +13,7 @@
 | ③ 반복 질문 방지·OWNER 값 보호·추출/분류 통합 호출 | 구현·기본 사례 검증 완료 | 보완 횟수·재질문 방지 자동 테스트, 기본 대화와 OWNER 제조사 충돌 실호출 |
 | ④ 실제 문의 저장 연결·기본 사례 실행·호출 메타데이터 기록 | 부분 완료 | 기록 기능과 SDK 대역의 성공·실패·시간 초과 검증 완료. 실제 Spring 호출·DB 저장·후속 요청의 상태 재사용 검증 필요 |
 
-Gemini 실험은 로컬 시제품 경로이며, 현재 FastAPI의 `OpenAIExtractionProvider` 서비스 경로 실호출과 실제 Spring DB 저장을 검증한 결과는 아니다. 실호출 성공은 아래에 기록한 고정 사례의 확인 범위다.
+아래 Gemini 실험은 로컬 시제품의 고정 사례 검증이다. 현재 FastAPI의 Bedrock 경로·실제 Spring DB 저장 검증과는 별개다.
 
 ## 기준과 범위
 
@@ -58,7 +58,7 @@ Gemini 실험은 로컬 시제품 경로이며, 현재 FastAPI의 `OpenAIExtract
 - 경로·헤더·공통 응답·필드명·오류 코드는 기존 서비스 계약을 유지했다. 분석 결과의 `requestId`·`inputVersion`도 그대로 반환한다.
 - `askCounts`를 명세 6.2의 **보완 횟수**로 교정했다. 최초 질문 뒤 `0`, 첫 보완 뒤 `1`, 두 번째 보완 뒤 `2`다. 기존 코드처럼 질문 합계를 보내면 한도를 조기에 소진하므로 Spring의 집계도 같은 기준이어야 한다.
 - 3.8 오류 표의 “다시 요청 1회 후에도”와 6.4의 “추가 모델 호출 없이 오류 반환·재시도는 Spring 하나로 통일”은 문서 내에서 다르다. 구체적인 책임·시간 예산이 정의된 **6.4를 적용**했다. 원본 문구 정합성은 담당자 확인이 필요하다.
-- 명세 6.3의 Bedrock과 기존 FastAPI의 OpenAI 직접 호출은 여전히 다르다. 이번 대화 작업에서 미검증 Bedrock 경로를 임의로 연결하지 않았다. Gemini는 로컬 검증용이며 서비스 제공사를 자동으로 전환하지 않는다.
+- 현재 FastAPI는 Bedrock 텍스트 경로를 사용한다. 실제 모델 ID·리전·실행 권한은 Dev에서 확인한다. OpenAI/Gemini 직접 API는 기존 실험으로만 보존하고 운영 경로로 자동 전환하지 않는다.
 - 기존 `intentEvidence`·`processedPhotoIds`·`analyzedPhotoIds` 확장과 `work_category` 질문 키는 유지했다. 이 항목의 Spring DTO 수용·처리 이력 저장은 별도 합의 대상이다.
 - 이름·전화번호·주소를 구조화된 접수 필드로 추가하지 않았다. 지역·인증은 Spring이 검사한다. **자유 대화에 고객이 직접 적은 개인정보를 찾아 제거하는 기능은 아니다.** Spring에서 모델에 전달할 대화의 개인정보 최소화·비식별 처리가 필요하다.
 
@@ -106,7 +106,7 @@ uv run python simulate_ilro_multiturn.py --mode mock
 # 실제 호출·사용료 발생. GEMINI_API_KEY 필요
 uv run python simulate_ilro_multiturn.py --mode gemini --turn "보일러가 안 돼요" --turn "온수가 안 나와요" --turn "수리를 받고 싶어요"
 
-# 서비스 경로: INTERNAL_KEY, OPENAI_API_KEY, OPENAI_MODEL 필요
+# 서비스 경로: INTERNAL_KEY, BEDROCK_MODEL_ID, AWS 리전·실행 권한 필요
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
@@ -164,7 +164,7 @@ OpenAI SDK의 비동기 호출·재시도 제어는 [공식 Python SDK 문서](h
 
 Spring BE-05/08 담당자와 다음 항목을 실제 환경에서 확인해야 한다.
 
-- [ ] 실제 연결에 사용할 제공사·모델을 합의하고 Spring → FastAPI → 모델의 성공 응답을 확인한다. Gemini 시제품 성공과 현재 OpenAI 서비스 경로를 구분하며, 명세의 Bedrock 차이도 함께 정리한다.
+- [ ] Dev에서 승인된 Bedrock 텍스트 모델로 Spring → FastAPI → Bedrock 성공 응답을 확인한다.
 - [ ] Spring이 DB의 최신 `fields`·출처·대화·`askCounts`·`safetyFlag`·`inputVersion`을 전달하는지 확인한다. `askCounts`는 최초 질문을 제외한 보완 횟수로 집계한다.
 - [ ] 분석 결과·접수 항목·AI 답변·처리 기록을 실제 DB에 함께 저장하고, 다음 요청과 재시작 후 복원에서 저장 상태를 재사용하는지 확인한다.
 - [ ] 결과 적용 시 문의 잠금·트랜잭션으로 최신 입력 버전·AI 응대 여부·중복 요청을 확인한다. STALE·인계 이후·중복 응답은 적용하지 않고 `OWNER` 값을 보호한다.
@@ -176,4 +176,4 @@ Spring BE-05/08 담당자와 다음 항목을 실제 환경에서 확인해야 �
 
 - 기본 3턴의 사용자 실행 기록과 부정·정정·OWNER 보호 고정 사례는 확인했다. 짧은 답변·다중 증상·다양한 동의 표현의 평가 사례를 늘린다. 이번 사례만으로 의미 정확성 전체를 보장하지 않는다.
 - 업체별 세부 질문·필수 항목, 선택 작업 유형의 수정 우선순위는 업체·백엔드 담당자와 확인한다.
-- Bedrock/YOLO 비교·매뉴얼 RAG·예약 확정·알림 생성은 각각의 후속 작업이다. 이 문서의 현재 완료 판정은 AI-02의 구현과 확인된 사례를 기준으로 한다.
+- YOLO·OCR 사진 연결, 매뉴얼 검색, 예약 확정·알림 생성은 이 문서의 텍스트 상담 검증과 별개다.

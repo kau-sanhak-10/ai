@@ -35,7 +35,16 @@ def load_rules(path: Path = RULES_PATH) -> IntakeRules:
 
     규칙이 없거나 깨졌다면 임의 기본값으로 조용히 진행하지 않는다.
     """
+
+    def no_duplicate_keys(items: list[tuple[str, object]]) -> dict[str, object]:
+        result = dict(items)
+        if len(result) != len(items):
+            raise ValueError("규칙 키가 중복되었습니다")
+        return result
+
     try:
-        return IntakeRules.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        return IntakeRules.model_validate(
+            json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=no_duplicate_keys)
+        )
     except (OSError, ValueError, ValidationError) as exc:
         raise RuntimeError("AI_RULES_UNAVAILABLE") from exc

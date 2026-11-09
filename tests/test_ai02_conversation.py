@@ -2,8 +2,7 @@
 
 import asyncio
 import json
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +12,7 @@ from app.intake.contracts import CategoryDecision, Message, Photo
 from app.intake.providers import ExtractedValue, ModelOutput, OpenAIExtractionProvider
 from app.main import create_app
 from simulate_ilro_multiturn import SimulatedSpring
+from tests.bedrock_fakes import bedrock_response, sdk_client, sdk_session
 from tests.test_intake_graph import FakeProvider, payload, run, symptom
 
 
@@ -20,24 +20,9 @@ def message(message_id, content, sender="CUSTOMER"):
     return Message(messageId=message_id, sender=sender, content=content, createdAt="2026-11-06")
 
 
-def sdk_client(*outputs):
-    client = MagicMock()
-    client.__aenter__.return_value = client
-    client.responses.parse = AsyncMock(
-        side_effect=[
-            SimpleNamespace(
-                output_parsed=output, usage=SimpleNamespace(input_tokens=12, output_tokens=8)
-            )
-            for output in outputs
-        ]
-    )
-    return client
-
-
 def test_api_passes_current_state_and_question_context_in_one_model_call(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "test-internal-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
-    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "test-model")
     req = payload(
         fields=[
             {
@@ -66,7 +51,7 @@ def test_api_passes_current_state_and_question_context_in_one_model_call(monkeyp
         workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"),
     )
     client = sdk_client(output)
-    with patch("openai.AsyncOpenAI", return_value=client):
+    with patch("boto3.session.Session", return_value=sdk_session(client)):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=req.model_dump(mode="json"),
@@ -78,8 +63,8 @@ def test_api_passes_current_state_and_question_context_in_one_model_call(monkeyp
     assert result["facts"][0]["evidence"]["messageId"] == 900
     assert result["promptVersion"] == PROMPT_VERSION
     assert result["usage"]["inputTokens"] == 12
-    assert client.responses.parse.await_count == 1
-    sent = json.loads(client.responses.parse.call_args.kwargs["input"][0]["content"][0]["text"])
+    assert client.converse.call_count == 1
+    sent = json.loads(client.converse.call_args.kwargs["messages"][0]["content"][0]["text"])
     assert sent["fields"][0]["source"] == "OWNER"
     assert sent["askCounts"] == {"symptom": 1}
     assert [m["sender"] for m in sent["messages"]] == ["CUSTOMER", "AI", "CUSTOMER"]
@@ -91,7 +76,7 @@ def test_blank_messages_are_rejected_before_any_model_call(monkeypatch, content)
     monkeypatch.setenv("INTERNAL_KEY", "test-internal-key")
     body = payload().model_dump(mode="json")
     body["messages"][0]["content"] = content
-    with patch("app.api.inquiries.OpenAIExtractionProvider") as factory:
+    with patch("app.api.inquiries.BedrockExtractionProvider") as factory:
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=body,
@@ -314,27 +299,26 @@ def test_audit_records_success_and_failure_without_content_or_secret(
     monkeypatch, caplog, failure, code
 ):
     monkeypatch.setenv("INTERNAL_KEY", "private-internal-secret")
-    monkeypatch.setenv("OPENAI_API_KEY", "private-api-secret")
-    monkeypatch.setenv("OPENAI_MODEL", "test-model")
-    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "test-model")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.5")
     output = ModelOutput(workCategory=CategoryDecision(value="REPAIR", status="CONFIRMED"))
     client = sdk_client(output)
     if failure == "invalid":
-        client.responses.parse.side_effect = None
-        client.responses.parse.return_value = SimpleNamespace(
-            output_parsed=None, usage=SimpleNamespace(input_tokens=12, output_tokens=8)
-        )
+        client.converse.side_effect = None
+        client.converse.return_value = bedrock_response(None)
     elif failure == "api":
-        client.responses.parse.side_effect = RuntimeError("private-exception-message")
+        client.converse.side_effect = RuntimeError("private-exception-message")
     elif failure == "timeout":
 
-        async def wait(**_):
+        async def wait(self, *_):
+            self.model_calls += 1
             await asyncio.Future()
 
-        client.responses.parse.side_effect = wait
+        # 시간 초과의 감사 로그는 취소 가능한 대기로 검증한다.
+        monkeypatch.setattr("app.intake.bedrock_provider.BedrockExtractionProvider._aparse", wait)
     req = payload()
     req.messages[0].content = "private-customer-message"
-    with patch("openai.AsyncOpenAI", return_value=client):
+    with patch("boto3.session.Session", return_value=sdk_session(client)):
         response = TestClient(create_app()).post(
             "/internal/v1/inquiries/analyze",
             json=req.model_dump(mode="json"),
@@ -354,4 +338,5 @@ def test_audit_records_success_and_failure_without_content_or_secret(
     else:
         assert event["usageReportedCalls"] == 0
     assert "private-" not in caplog.text
-    client.__aexit__.assert_awaited_once()
+    if failure != "timeout":
+        client.close.assert_called_once()

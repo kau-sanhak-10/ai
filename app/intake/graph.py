@@ -163,11 +163,13 @@ def build_workflow(
     def needs_image(state: IntakeState) -> str:
         return "analyze_image" if pending_photos(state) else "merge_facts"
 
-    def image_update(state: IntakeState, outputs: list[tuple[int, Understanding]]) -> dict:
+    def image_update(state: IntakeState, outputs: list[tuple[int, Understanding | None]]) -> dict:
         observations = []
         safety_reasons = list(state["safety"].reasons)
         has_safety = state["safety"].flag
         for _, raw in outputs:
+            if raw is None:
+                continue
             observations.extend(raw.observations)
             if raw.safety.flag:
                 has_safety = True
@@ -175,7 +177,7 @@ def build_workflow(
         return {
             "stage": "EXTRACT",
             "observations": observations,
-            "analyzedPhotoIds": [photo_id for photo_id, _ in outputs],
+            "analyzedPhotoIds": [photo_id for photo_id, raw in outputs if raw is not None],
             "safety": Safety(flag=has_safety, reasons=list(dict.fromkeys(safety_reasons))),
         }
 
@@ -279,14 +281,13 @@ def build_workflow(
                 ]
             candidates: list[ConflictCandidate] = []
             if existing_confirmed:
-                evidence = (
-                    Evidence(
-                        photoId=existing.photoId if existing.source == "PHOTO" else None,
-                        messageId=existing.messageId if existing.source != "PHOTO" else None,
-                    )
-                    if (existing.photoId or existing.messageId)
-                    else None
-                )
+                evidence = None
+                if existing.photoId is not None and (
+                    existing.source == "PHOTO" or existing.messageId is None
+                ):
+                    evidence = Evidence(photoId=existing.photoId)
+                elif existing.messageId is not None:
+                    evidence = Evidence(messageId=existing.messageId)
                 candidates.append(
                     ConflictCandidate(
                         value=existing.value,
