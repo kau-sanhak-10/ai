@@ -78,6 +78,8 @@ START → extract_message → (photos?) analyze_image → merge_facts
 | 작업 유형 미확인 | 고객의 직접 선택을 강제하지 않고 대화로 질문. 한도 도달 후에도 미확인이면 이관 |
 | 증상·작업 유형 확인, 업체 허용 유형 및 자동 예약 설정 충족 | `CHECK_SCHEDULE` 제안. 최종 예약 조건은 Spring에서 검증 |
 
+고객의 최신 발화가 “보일러에서 가스 냄새가 나요”처럼 현재 가스 누출을 직접 신고하는 문장이면, 제한된 규칙으로 먼저 감지해 텍스트 모델·사진을 기다리지 않고 `SAFETY` 이관을 반환한다. 부정·과거 언급·일반 질문·모호한 표현은 이 규칙으로 강제 이관하지 않는다. 고객 안내는 누출을 확정하지 않고, 상담을 기다리지 말고 안전한 곳에서 119 또는 가스 공급업체에 연락하도록 안내한다. [소방청 가스 안전 교육](https://119metaverse.nfa.go.kr/occasion/kids-quiz/quiz-test) · [금산군 가스사고 예방요령](https://www.geumsan.go.kr/kr/html/sub06/06080301.html?GotoPage=19&mode=V&no=881adee4dc05f2a30ff171d3acb35c39)
+
 참고 항목이라도 해당 작업의 필수 항목으로 설정되면 필수정보 정책이 우선한다. 참고정보 충돌의 미확인 제안은 `value=null`, `status=UNCONFIRMED`, `unconfirmedReason=CONFLICT`이며 기존 `OWNER` 값은 변경 제안하지 않는다. 해당 충돌만으로 사장님 확인 업무를 만들지 않는다.
 
 ### CHECK_SCHEDULE 이후의 책임 경계

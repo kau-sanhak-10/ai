@@ -22,6 +22,22 @@ _OBSERVABLE = re.compile(
     r"(?:에러|오류)(?:코드)?(?:가|이|는)?(?:[a-z]?\d+|표시|떠|발생)"
 )
 
+# ponytail: only explicit current reports bypass the model; ambiguous phrasing uses Bedrock.
+GAS_LEAK_REASON = "POSSIBLE_GAS_LEAK"
+_GAS_REPORT = re.compile(
+    r"(?:(?:보일러(?:가?있는곳|주변|근처)?|집|집안|실내)에서)?"
+    r"(?:지금|갑자기)?"
+    r"(?:가스냄새(?:가|는)?(?:좀|많이|계속|강하게)?(?:나요|납니다|나는데요|나는것같아요)|"
+    r"가스(?:가)?(?:새요|샙니다|새는것같아요|누출되는것같아요))"
+)
+
+
+def reports_possible_gas_leak(value: str) -> bool:
+    for clause, end in re.findall(r"([^.!?。！？,，;；\n]+)([.!?。！？,，;；\n]?)", value):
+        if end not in {"?", "？"} and _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause)):
+            return True
+    return False
+
 
 def is_specific_symptom(value: str) -> bool:
     compact = re.sub(r"\s+", "", value).lower()

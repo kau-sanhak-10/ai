@@ -13,6 +13,7 @@ from app.core.config import Settings, get_settings
 from app.intake.bedrock_provider import BedrockExtractionProvider
 from app.intake.contracts import CategoryDecision, Evidence, RawObservation, Safety, Understanding
 from app.intake.providers import ExtractedValue, ModelOutput
+from app.intake.symptom_rules import reports_possible_gas_leak
 from app.main import create_app
 from tests.bedrock_fakes import bedrock_response, sdk_client, sdk_session
 from tests.test_intake_graph import FakeProvider, payload, symptom
@@ -206,7 +207,9 @@ def test_text_and_new_photo_start_before_either_finishes(monkeypatch):
     assert response.json()["result"]["analyzedPhotoIds"] == [56]
 
 
-@pytest.mark.parametrize("case", ["direct_request", "known_safety", "detected_safety"])
+@pytest.mark.parametrize(
+    "case", ["direct_request", "known_safety", "detected_safety", "gas_report"]
+)
 def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
@@ -234,6 +237,8 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     req = payload(photos=[{"photoId": 56, "messageId": 900, "imageUrl": "https://example.org/x"}])
     if case == "direct_request":
         req.messages[0].content = "사장님과 통화하고 싶어요."
+    if case == "gas_report":
+        req.messages[0].content = "보일러 있는 곳에서 가스 냄새가 나요. 어떻게 하죠?"
     req.safetyFlag = case == "known_safety"
     with patch("app.api.inquiries.BedrockExtractionProvider", return_value=provider):
         response = TestClient(create_app()).post(
@@ -246,9 +251,27 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
     assert result["nextAction"]["action"] == "ESCALATE_TO_OWNER"
     assert result["safety"]["flag"] == (case != "direct_request")
     assert result["analyzedPhotoIds"] == []
+    if case == "gas_report":
+        assert result["nextAction"]["ruleReason"] == "SAFETY"
+        assert result["safety"]["reasons"] == ["POSSIBLE_GAS_LEAK"]
+        assert "안전한 곳에서 119" in result["reply"]["content"]
     assert (
         provider.photo_started.is_set() == provider.photo_cancelled == (case == "detected_safety")
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "가스 냄새가 나요?",
+        "가스 냄새는 안 나요.",
+        "가스 냄새가 나면 어떻게 해요?",
+        "어제는 가스 냄새가 났어요.",
+        "가스보일러 난방이 안 돼요.",
+    ],
+)
+def test_non_reports_do_not_force_gas_handoff(text):
+    assert not reports_possible_gas_leak(text)
 
 
 @pytest.mark.parametrize("seconds", [0, -1, 30, 31])

@@ -39,7 +39,7 @@ from app.intake.contracts import (
 from app.intake.intent_rules import intent_evidence_supports, normalize_customer_intent
 from app.intake.providers import AsyncExtractionProvider, ExtractionProvider
 from app.intake.rules import IntakeRules
-from app.intake.symptom_rules import is_specific_symptom
+from app.intake.symptom_rules import GAS_LEAK_REASON, is_specific_symptom, reports_possible_gas_leak
 
 
 class IntakeState(TypedDict, total=False):
@@ -115,6 +115,10 @@ def build_workflow(
                 "safety": Safety(flag=state["request"].safetyFlag, reasons=[]),
             }
         latest = customer_messages[-1]
+        gas_report = reports_possible_gas_leak(latest.content)
+        safety_reasons = [reason for reason in raw.safety.reasons if reason != GAS_LEAK_REASON]
+        if gas_report:
+            safety_reasons.append(GAS_LEAK_REASON)
         intent = normalize_customer_intent(
             raw.intent,
             latest.content,
@@ -135,12 +139,15 @@ def build_workflow(
             else None,
             "workCategory": raw.workCategory,
             "safety": Safety(
-                flag=state["request"].safetyFlag or raw.safety.flag,
-                reasons=raw.safety.reasons,
+                flag=state["request"].safetyFlag or raw.safety.flag or gas_report,
+                reasons=safety_reasons,
             ),
         }
 
     def extract_message(state: IntakeState) -> dict:
+        known = message_update(state, Understanding())
+        if GAS_LEAK_REASON in known["safety"].reasons:
+            return known
         messages = [
             m for m in state["request"].messages if m.sender == "CUSTOMER" and m.content.strip()
         ]
@@ -585,7 +592,13 @@ def build_workflow(
         elif action.action == "CHECK_SCHEDULE":
             content = "접수된 정보를 바탕으로 방문 가능한 시간을 확인해 주세요."
         elif action.action == "ESCALATE_TO_OWNER":
-            content = "사장님 확인이 필요한 내용입니다. 화면의 상담 연결 절차로 진행해 주세요."
+            if GAS_LEAK_REASON in state["safety"].reasons:
+                content = (
+                    "가스 누출이 의심돼요. 상담 답변이나 방문을 기다리지 말고, "
+                    "안전한 곳에서 119 또는 가스 공급업체에 연락해 주세요."
+                )
+            else:
+                content = "사장님 확인이 필요한 내용입니다. 화면의 상담 연결 절차로 진행해 주세요."
         elif action.action == "UNSERVICEABLE":
             content = "업체에서 제공하는 작업인지 확인이 필요합니다."
         elif action.action == "ANSWER_SIDE_QUESTION":
