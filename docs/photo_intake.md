@@ -28,4 +28,8 @@ PHOTO_OCR_MODELS_DIR=/models
 - 현재 제공하는 YOLOE는 학습된 6클래스 모델이 아닌 영역 탐지 기준선이다. 팀 커스텀 가중치를 확보하면 동일한 클래스 이름 및 실제 사진을 검증한 후 교체하며, 이때 YOLOE 임베딩 설정은 비운다.
 - Dev 테스트 문의에서 사진 업로드 → `facts[].evidence.photoId` 확인 → 같은 문의 저장·사장님 조회 → 같은 사진 중복 미처리를 순서대로 확인한다. 요청 시간과 컨테이너 메모리를 측정하기 전에는 기본 운영 설정으로 켜지 않는다.
 
+## 로컬 검증 · 11/10
+
+2 vCPU로 제한한 Linux 컨테이너에서 S3 다운로드만 사진 파일로 대체하고, YOLO·OCR과 FastAPI 응답은 실제로 실행했다. 기존 샘플 사진 10장 모두 HTTP 200과 올바른 사진 근거 ID를 반환했다. 워밍업 이후 2.5~24.0초, 중앙값 약 9.8초, 컨테이너 최대 메모리 약 834 MiB였다. 제조사 7건과 본체 모델 문자열 1건을 출력했으며, 모델 문자열은 글자 오독이 있었고 이 표본의 오류코드는 확정하지 못했다. 독립 정확도 평가가 아니며, 실제 S3·Bedrock·Spring을 합친 요청은 검증하지 않았다. 사진 분석만으로 24초에 근접한 사례가 있어 Dev에서 전체 시간 제한을 먼저 확인한다.
+
 모델 출처: [Ultralytics YOLOE](https://docs.ultralytics.com/models/yoloe/) · [PaddleOCR 경량 글자 탐지](https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det)
