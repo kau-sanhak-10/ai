@@ -4,7 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-FieldKey = Literal["manufacturer", "model", "boiler_type", "error_code", "symptom"]
+FieldKey = Literal[
+    "manufacturer", "model", "controller_model", "boiler_type", "error_code", "symptom"
+]
 Source = Literal["CUSTOMER", "PHOTO"]
 UnconfirmedReason = Literal[
     "NOT_PROVIDED", "PHOTO_UNREADABLE", "CONFLICT", "CUSTOMER_UNSURE", "ASK_LIMIT_REACHED"

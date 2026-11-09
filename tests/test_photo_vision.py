@@ -8,6 +8,7 @@ from PIL import Image
 from app.intake.contracts import Message
 from app.intake.photo_vision import decode_photo, validate_s3_photo_url
 from app.intake.vision_rules import extract
+from app.intake.vision_text import extract_with_text
 from app.main import create_app
 from tests.test_intake_graph import payload
 
@@ -87,7 +88,23 @@ def test_only_explicit_display_error_is_reported(screen_text, expected):
     assert result["error_code"] == expected
 
 
-def test_service_keeps_photo_id_and_excludes_controller_model(monkeypatch):
+def test_controller_label_row_does_not_overwrite_boiler_or_display():
+    texts = [
+        ("실내온도조절기", [0.1, 0.1, 0.5, 0.2]),
+        ("모델명", [0.1, 0.6, 0.28, 0.7]),
+        ("CTRL-1", [0.32, 0.6, 0.50, 0.7]),
+        ("A6", [0.5, 0.35, 0.63, 0.44]),
+    ]
+    tokens = [dict(text=text, bbox=bbox, score=0.99, complete=True) for text, bbox in texts]
+    result = extract_with_text([{"class": "display", "bbox": [0.4, 0.3, 0.7, 0.5]}], tokens)
+    assert (result["controller_model"], result["model"], result["error_code"]) == (
+        "CTRL-1",
+        None,
+        "A6",
+    )
+
+
+def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "internal-test-key")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "text-model")
     monkeypatch.setenv("PHOTO_S3_BUCKET", BUCKET)
@@ -127,6 +144,7 @@ def test_service_keeps_photo_id_and_excludes_controller_model(monkeypatch):
         for f in result["facts"]
     ] == [
         ("manufacturer", "린나이", None, 27),
+        ("controller_model", "CTRL-1", None, 27),
         ("error_code", None, "PHOTO_UNREADABLE", 27),
     ]
     request.processedPhotoIds = [27]

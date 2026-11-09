@@ -24,7 +24,7 @@
 - 요청: 명세 6.2 `requestId`, `inquiryId`, `ownerId`, `inputVersion`, `handlerMode`, `business`, `fields`, `askCounts`, `messages`, `photos`, `safetyFlag`.
 - 사진 처리 이력용 선택 필드 `processedPhotoIds`를 추가했다. 기본값은 `[]`이며 기존 요청도 유효하다. 응답에는 이번 요청에서 성공적으로 분석한 `analyzedPhotoIds`와 검증된 연결 의도 근거 `intentEvidence`를 추가했다. Spring DTO 및 저장 정책과 함께 연동해야 한다.
 - 응답: `ApiResponse[AnalyzeResult]` — `{success,code,message,result}`. 결과는 명세 6.3의 `facts`, `conflicts`, `interpretations`, `workCategory`, `safety`, `intent`, `nextAction`, `reply` 및 버전·모델 사용량 메타데이터.
-- 현재 계약의 `FieldKey`는 `manufacturer`, `model`, `boiler_type`, `error_code`, `symptom`이다. 구조화된 고객 이름·주소·전화번호·예약 슬롯 필드는 없다. 연락처 인증·방문 주소·지역·일정 조건은 Spring이 관리·검증한다. 대화에 개인정보가 포함될 수 있으므로 구조화 필드 부재만으로 외부 전송 데이터가 비식별이라고 보장할 수는 없다.
+- 현재 계약의 `FieldKey`는 `manufacturer`, `model`, `controller_model`, `boiler_type`, `error_code`, `symptom`이다. 조절기 모델은 별도 참고정보로 취급한다. 구조화된 고객 이름·주소·전화번호·예약 슬롯 필드는 없다. 연락처 인증·방문 주소·지역·일정 조건은 Spring이 관리·검증한다. 대화에 개인정보가 포함될 수 있으므로 구조화 필드 부재만으로 외부 전송 데이터가 비식별이라고 보장할 수는 없다.
 - 문의/업체·사진 ID의 **소유권 확인은 Spring의 책임**이다. AI는 공유 내부 키를 인증하고, 반환된 사실·충돌 후보의 근거 ID가 요청의 메시지·사진 또는 기존 필드 근거에 포함되는지 검사한다. 이는 실제 DB 소유권 조회를 대신하지 않는다. 사진 URL은 HTTPS 및 일부 로컬·사설 주소 차단 규칙을 적용한다.
 - 데이터 원본은 Spring DB다. `IntakeState.request` 안에 `inquiryId`, `ownerId`, `inputVersion`, `handlerMode`가 연결되고 실행 단계는 `stage=EXTRACT/DECIDE/SUMMARY`로 기록된다. Checkpointer나 AI 측 문의 저장소는 사용하지 않는다.
 - 재시작 후에는 Spring이 DB에서 복원한 `fields`, `askCounts`, `messages`, `safetyFlag`, 최신 입력 버전·응대 주체를 새 요청으로 보내야 한다. 실행 중의 `stage`는 임시 상태이며 이 저장소에서 DB에 저장하지 않는다. Spring은 결과 적용 시 최신 `inputVersion`·응대 주체·중복 요청을 다시 검사해야 한다.
@@ -64,7 +64,7 @@ START → extract_message → (photos?) analyze_image → merge_facts
 - 미확인 증상은 확인된 현재값 및 충돌 후보에서 제외하고 구체적인 보완 답변으로 갱신한다. 과거에 일반 고객의 모호한 증상이 `CONFIRMED`로 저장된 경우도 보완 답변과 충돌시키지 않는다. 기존 `OWNER` 값은 이 처리로 덮어쓰지 않는다. 서로 다른 구체적인 증상이 제시되면 기존대로 충돌 재확인을 진행한다.
 - 모델은 연결·회신 의도와 함께 `intentEvidence={messageId, observedText}`를 반환한다. 최신 고객 메시지 ID와 원문 문구의 일치뿐 아니라 **그 근거가 포함된 절이 실제 연결 요청인지** 확인한다. 거절·부정·과거 통화 설명·인용된 안내 문구는 근거가 일치해도 이관 의도로 인정하지 않는다. `전화 좀 주실 수 있나요`, `사장님 바꿔주세요`, `사장님과 직접 이야기하고 싶어요`는 명시 요청으로 처리한다.
 - 검증을 통과하면 모델이 선택한 `ASK_OWNER/CALLBACK`을 유지한다. 근거가 없거나 검증에 실패한 경우에도 별도의 명시 요청 절이 있으면 보완 규칙으로 확인한다. 이 보완 경로에도 같은 부정·과거 설명 검사를 적용한다. 확인되지 않은 모델의 연결 의도는 관찰값 유무에 따라 `ANSWER/OTHER`로 보정하고 거부된 `intentEvidence`는 응답에 남기지 않는다. 안전 플래그는 의도 보정과 관계없이 우선 처리한다.
-- 필수 항목은 [rules/inquiry_types.yaml](../rules/inquiry_types.yaml)(YAML 1.2 호환 JSON 문법)에서 관리한다. 현재 공통 필수는 `symptom`이며 업무별 추가 필수 항목은 비어 있다. 참고 항목은 `manufacturer/model/boiler_type/error_code`다. 업체별 필수 항목의 개별 설정은 미구현이며, 요청의 `business`는 허용 작업 유형과 자동 예약 허용 여부를 전달한다.
+- 필수 항목은 [rules/inquiry_types.yaml](../rules/inquiry_types.yaml)(YAML 1.2 호환 JSON 문법)에서 관리한다. 현재 공통 필수는 `symptom`이며 업무별 추가 필수 항목은 비어 있다. 참고 항목은 `manufacturer/model/controller_model/boiler_type/error_code`다. 업체별 필수 항목의 개별 설정은 미구현이며, 요청의 `business`는 허용 작업 유형과 자동 예약 허용 여부를 전달한다.
 - `decidedBy=RULE`: 현재 행동 선정 함수는 검증 규칙 기반이고, 외부 LLM은 대화/사진의 원시 관찰값과 의도/작업 유형을 구조화하는 역할이다.
 
 ### 미확인·충돌·질문 종료 정책

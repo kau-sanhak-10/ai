@@ -16,7 +16,7 @@ from app.common.errors import BusinessException, ErrorCode
 from app.core.config import Settings
 from app.intake.contracts import Evidence, FieldKey, Photo, RawObservation, Understanding
 from app.intake.vision_rules import extract
-from app.intake.vision_text import extract_with_text, visual_regions
+from app.intake.vision_text import extract_with_text, model_label_tokens, visual_regions
 
 MAX_PHOTO_BYTES = 10_000_000
 MAX_PIXELS = 32_000_000
@@ -242,6 +242,25 @@ def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[],
             for i, d in enumerate(detections)
             if d["class"] in region_types and _inside(d["bbox"], targets[0]["bbox"])
         ]
+        if controller:
+            controller_text = [
+                t
+                for t in tokens
+                if _inside(t["bbox"], targets[0]["bbox"])
+                and not any(
+                    _inside(t["bbox"], d["bbox"]) for d in detections if d["class"] == "display"
+                )
+            ]
+            labels = model_label_tokens(controller_text)
+            if labels:
+                regions.append(
+                    {
+                        "kind": "controller_label",
+                        "bbox": targets[0]["bbox"],
+                        "id": "controller_label",
+                        "texts": labels,
+                    }
+                )
         photo_type = {
             "boiler_controller": "CONTROLLER",
             "boiler_body": "BODY",
@@ -254,7 +273,7 @@ def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[],
                 "regions": regions,
             }
         )[0]
-        if any(primary[key] for key in ("manufacturer", "model", "error_code")):
+        if any(primary[key] for key in ("manufacturer", "model", "controller_model", "error_code")):
             return primary
     return extract_with_text(detections, tokens, visual_regions(image))
 
@@ -264,14 +283,14 @@ def photo_observations(result: dict, photo_id: int) -> Understanding:
     if result["photo_type"] == "NOT_BOILER":
         return Understanding()
     if result["photo_type"] == "CONTROLLER":
-        keys = ("manufacturer", "error_code")  # 조절기 모델을 본체 model로 저장하지 않는다.
+        keys = ("manufacturer", "controller_model", "error_code")
     observations = []
     for key in keys:
         value = result[key]
         if key == "manufacturer":
             value = MAKER_NAMES.get(value)
         elif (
-            key == "model"
+            key in {"model", "controller_model"}
             and value
             and (
                 len(value) > 60

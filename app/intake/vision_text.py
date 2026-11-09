@@ -52,6 +52,24 @@ def overlap(token, box):
     return intersection >= 0.6 * area(a)
 
 
+def model_label_tokens(tokens):
+    # Only explicit label rows, not arbitrary product or error codes on the case.
+    rows = []
+    for token in tokens:
+        if MODEL_LABEL.search(token["text"]):
+            rows.append(token)
+            a = token["bbox"]
+            rows.extend(
+                t
+                for t in tokens
+                if t is not token
+                and t["bbox"][0] >= a[2] - 0.01
+                and min(a[3], t["bbox"][3]) - max(a[1], t["bbox"][1])
+                >= 0.5 * min(a[3] - a[1], t["bbox"][3] - t["bbox"][1])
+            )
+    return list({id(t): t for t in rows}.values())
+
+
 def visual_regions(image):
     """Classical rectangular-panel proposals, not YOLO predictions or probabilities."""
     import cv2
@@ -193,26 +211,13 @@ def extract_with_text(detections, tokens, visual=(), min_score=0.85):
                         "recognized printed brand",
                     )
             if photo == "BODY":
-                # Only model-label rows, not an arbitrary product family printed on the case.
-                model_rows = []
-                for token in usable:
-                    if MODEL_LABEL.search(token["text"]):
-                        model_rows.append(token)
-                        a = token["bbox"]
-                        model_rows.extend(
-                            t
-                            for t in usable
-                            if t is not token
-                            and t["bbox"][0] >= a[2] - 0.01
-                            and min(a[3], t["bbox"][3]) - max(a[1], t["bbox"][1])
-                            >= 0.5 * min(a[3] - a[1], t["bbox"][3] - t["bbox"][1])
-                        )
-                add(
-                    "nameplate",
-                    list({id(t): t for t in model_rows}.values()),
-                    "explicit model-label rows",
-                )
+                add("nameplate", model_label_tokens(usable), "explicit model-label rows")
             else:
+                add(
+                    "controller_label",
+                    model_label_tokens(usable),
+                    "explicit controller model-label rows",
+                )
                 for token in usable:
                     if IDENTIFIER.fullmatch(token["text"].strip()) and not ERROR.fullmatch(
                         token["text"].strip()
