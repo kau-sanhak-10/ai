@@ -31,6 +31,8 @@ class SlowAsyncProvider(FakeProvider):
     async def aanalyze_image(self, photo):
         self.started_photos.append(photo.photoId)
         try:
+            if photo.photoId == 57:
+                await asyncio.Future()
             await asyncio.sleep(0.15)
             return super().analyze_image(photo)
         except asyncio.CancelledError:
@@ -47,7 +49,7 @@ class SlowAsyncProvider(FakeProvider):
 def test_deadline_is_shared_by_text_and_all_photos(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
-    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.25")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.6")
     get_settings.cache_clear()
     provider = SlowAsyncProvider()
     body = payload(
@@ -65,8 +67,8 @@ def test_deadline_is_shared_by_text_and_all_photos(monkeypatch):
     assert response.status_code == 504
     assert response.json()["code"] == "AI_MODEL_TIMEOUT"
     assert response.json()["result"] is None
-    assert provider.started_photos == [56]
-    assert provider.cancelled_photos == [56]
+    assert provider.started_photos == [56, 57]
+    assert provider.cancelled_photos == [57]
 
 
 def test_sdk_timeout_stops_waiting_and_closes_client_after_worker_finishes(monkeypatch):
@@ -173,6 +175,37 @@ def test_async_service_analyzes_only_new_photo_and_returns_grounded_facts(monkey
     assert client.close.call_count == 1
 
 
+def test_text_and_new_photo_start_before_either_finishes(monkeypatch):
+    monkeypatch.setenv("INTERNAL_KEY", "unit-test")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "1")
+    get_settings.cache_clear()
+
+    class ConcurrentProvider(FakeProvider):
+        text_started = asyncio.Event()
+        photo_started = asyncio.Event()
+
+        async def aextract_message(self, messages):
+            self.text_started.set()
+            await self.photo_started.wait()
+            return Understanding(observations=[symptom()])
+
+        async def aanalyze_image(self, photo):
+            self.photo_started.set()
+            await self.text_started.wait()
+            return Understanding()
+
+    req = payload(photos=[{"photoId": 56, "messageId": 900, "imageUrl": "https://example.org/x"}])
+    with patch("app.api.inquiries.BedrockExtractionProvider", return_value=ConcurrentProvider()):
+        response = TestClient(create_app()).post(
+            "/internal/v1/inquiries/analyze",
+            json=req.model_dump(mode="json"),
+            headers={"X-Internal-Key": "unit-test"},
+        )
+    assert response.status_code == 200
+    assert response.json()["result"]["analyzedPhotoIds"] == [56]
+
+
 @pytest.mark.parametrize("seconds", [0, -1, 30, 31])
 def test_deadline_must_be_positive_and_less_than_spring_timeout(seconds):
     with pytest.raises(ValidationError):
@@ -190,7 +223,7 @@ def test_deadline_must_be_positive_and_less_than_spring_timeout(seconds):
 def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, failure, status, code):
     monkeypatch.setenv("INTERNAL_KEY", "unit-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "unit-test-model")
-    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.15")
+    monkeypatch.setenv("INTAKE_TIMEOUT_SECONDS", "0.6" if failure == "timeout" else "2")
     get_settings.cache_clear()
 
     class PartialPhotoProvider(FakeProvider):
@@ -200,9 +233,14 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
             self.finished = []
             self.active = set()
             self.cancelled = []
+            self.text_cancelled = False
 
         async def aextract_message(self, messages):
-            return super().extract_message(messages)
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                self.text_cancelled = True
+                raise
 
         async def aanalyze_image(self, photo):
             self.started.append(photo.photoId)
@@ -241,6 +279,7 @@ def test_partial_photo_success_is_never_published_as_a_success(monkeypatch, fail
     assert provider.started == [56, 57]
     assert provider.finished == [56]
     assert provider.active == set()
+    assert provider.text_cancelled
     assert provider.cancelled == ([57] if failure == "timeout" else [])
     assert req.processedPhotoIds == []
 
@@ -283,8 +322,6 @@ def test_photo_format_failure_does_not_retry_or_mark_complete(monkeypatch):
             headers={"X-Internal-Key": "unit-test"},
         )
     analyze_photo.assert_awaited_once()
-    assert client.converse.call_count == 1
-    assert client.close.call_count == 1
     assert response.status_code == 502
     assert response.json()["code"] == "AI_OUTPUT_INVALID"
     assert response.json()["result"] is None

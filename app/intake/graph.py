@@ -7,6 +7,7 @@ Spring DB가 유일한 원본이다. Graph의 State는 요청 동안만 존재�
 
 from __future__ import annotations
 
+import asyncio
 import operator
 import re
 from collections.abc import Callable
@@ -27,6 +28,7 @@ from app.intake.contracts import (
     Interpretation,
     ManualHit,
     NextAction,
+    Photo,
     RawObservation,
     Reply,
     Safety,
@@ -160,7 +162,7 @@ def build_workflow(
             )
         return message_update(state, raw)
 
-    def pending_photos(state: IntakeState):
+    def pending_photos(state: IntakeState) -> list[Photo]:
         processed = set(state["request"].processedPhotoIds)
         return [photo for photo in state["request"].photos if photo.photoId not in processed]
 
@@ -191,12 +193,30 @@ def build_workflow(
             [(photo.photoId, provider.analyze_image(photo)) for photo in pending_photos(state)],
         )
 
-    async def aanalyze_image(state: IntakeState) -> dict:
+    async def aanalyze_photos(photos: list[Photo]) -> list[tuple[int, Understanding | None]]:
         outputs = []
-        for photo in pending_photos(state):
+        for photo in photos:
             raw = await cast(AsyncExtractionProvider, provider).aanalyze_image(photo)
             outputs.append((photo.photoId, raw))
-        return image_update(state, outputs)
+        return outputs
+
+    async def aextract_inputs(state: IntakeState) -> dict:
+        photos = pending_photos(state)
+        if not photos:
+            return await aextract_message(state)
+        # 두 분석은 독립적이지만 안전 신호와 근거의 적용 순서는 기존과 동일하다.
+        tasks = (
+            asyncio.create_task(aextract_message(state)),
+            asyncio.create_task(aanalyze_photos(photos)),
+        )
+        try:
+            message, outputs = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        image = image_update({**state, **message}, outputs)
+        return {**message, **image, "observations": message["observations"] + image["observations"]}
 
     def merge_facts(state: IntakeState) -> dict:
         originals = {field.fieldKey: field for field in state["request"].fields}
@@ -649,8 +669,7 @@ def build_workflow(
 
     # 1. 노드 등록
     for name, node in (
-        ("extract_message", aextract_message if asynchronous else extract_message),
-        ("analyze_image", aanalyze_image if asynchronous else analyze_image),
+        ("extract_message", aextract_inputs if asynchronous else extract_message),
         ("merge_facts", merge_facts),
         ("check_rules", check_rules),
         ("decide_action", decide_action),
@@ -664,14 +683,16 @@ def build_workflow(
     graph.add_edge(START, "extract_message")
 
     # 3. 사진 유무에 따른 분기
-    graph.add_conditional_edges(
-        "extract_message",
-        needs_image,
-        ["analyze_image", "merge_facts"],
-    )
-
-    # 4. 사진 분석 후 정보 통합
-    graph.add_edge("analyze_image", "merge_facts")
+    if asynchronous:
+        graph.add_edge("extract_message", "merge_facts")
+    else:
+        graph.add_node("analyze_image", analyze_image)
+        graph.add_conditional_edges(
+            "extract_message",
+            needs_image,
+            ["analyze_image", "merge_facts"],
+        )
+        graph.add_edge("analyze_image", "merge_facts")
     graph.add_edge("merge_facts", "check_rules")
 
     # 5. 강제 처리 여부에 따른 분기
