@@ -3,6 +3,7 @@
 import asyncio
 import hmac
 import time
+from functools import partial
 
 from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from fastapi import APIRouter, Header
@@ -16,6 +17,7 @@ from app.intake.bedrock_provider import BedrockExtractionProvider
 from app.intake.context import PROMPT_VERSION
 from app.intake.contracts import AnalyzeRequest, AnalyzeResult
 from app.intake.graph import build_workflow
+from app.intake.photo_vision import analyze_photo, validate_s3_photo_url
 from app.intake.providers import validate_photo_url
 from app.intake.rules import load_rules
 
@@ -54,6 +56,9 @@ async def _analyze(payload: AnalyzeRequest) -> AnalyzeResult:
         provider = BedrockExtractionProvider(
             settings.bedrock_model_id.strip(),
             timeout_seconds=settings.intake_timeout_seconds,
+            photo_analyzer=partial(analyze_photo, settings=settings)
+            if settings.photo_s3_bucket
+            else None,
         )
         graph = build_workflow(provider, rules, asynchronous=True)
         state = await graph.ainvoke({"request": payload, "observations": []})
@@ -114,12 +119,18 @@ async def analyze_inquiry(
     # JSON 본문·사진 원본·비밀키는 로그에 남기지 않는다.
     _authenticate(x_internal_key)
     try:
+        settings = get_settings()
+        processed = set(body.processedPhotoIds)
         for photo in body.photos:
             validate_photo_url(photo.imageUrl)
+            if settings.photo_s3_bucket and photo.photoId not in processed:
+                validate_s3_photo_url(
+                    photo.imageUrl, settings.photo_s3_bucket, settings.photo_s3_region
+                )
     except ValueError as exc:
         raise BusinessException(ErrorCode.INVALID_INPUT) from exc
     try:
-        async with asyncio.timeout(get_settings().intake_timeout_seconds):
+        async with asyncio.timeout(settings.intake_timeout_seconds):
             result = await _analyze(body)
     except TimeoutError as exc:
         raise BusinessException(ErrorCode.AI_MODEL_TIMEOUT) from exc

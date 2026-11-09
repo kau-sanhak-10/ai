@@ -86,7 +86,7 @@ uv run pytest           # 테스트
 - **모델 접근 권한이 없으면 502 `AI_MODEL_ERROR`** (직접 API나 가짜 응답으로 대체하지 않음)
 - 전체 분석 시간은 `INTAKE_TIMEOUT_SECONDS`(기본 25초, 30초 미만)로 제한하며 초과 시 504 `AI_MODEL_TIMEOUT`을 반환합니다.
 - 모호한 증상은 `UNCONFIRMED / NOT_PROVIDED`로 반환하고, 연결 의도는 최신 고객 원문의 `intentEvidence`로 검증합니다.
-- Spring은 신규 사진만 `photos`로 보내거나 처리 이력을 `processedPhotoIds`로 전달할 수 있습니다. 사진·URL은 Bedrock에 전달하지 않습니다. YOLO·OCR이 연결되지 않았으면 새 사진을 `analyzedPhotoIds`에 포함하지 않으며, 실제 판독을 마친 경우에만 처리 이력으로 저장합니다.
+- Spring은 신규 사진을 `photos`로 보내고 처리 이력은 `processedPhotoIds`로 전달합니다. [사진 분석 설정](docs/photo_intake.md)을 적용하면 YOLO·OCR·규칙으로 로컬 판독합니다. 사진·URL은 Bedrock에 보내지 않고, 판독을 마친 경우에만 `analyzedPhotoIds`를 반환합니다.
 - 구조/Graph/Mock 테스트: `tests/test_intake_*.py`
 - 상세 설계, 책임 경계, 미구현 항목: [`docs/DS05_intake_graph.md`](docs/DS05_intake_graph.md)
 

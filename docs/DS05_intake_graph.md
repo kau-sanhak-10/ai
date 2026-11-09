@@ -99,7 +99,7 @@ START → extract_message → (photos?) analyze_image → merge_facts
 - **로컬 Gemini 검증 경로:** [try_my_intake_gemini.py](../try_my_intake_gemini.py)의 `GeminiGraphTestProvider`를 사용한다. `GEMINI_API_KEY`, 기본 모델 ID `gemini-3.5-flash-lite`를 사용하며 `--model`로 변경할 수 있다. 텍스트와 `--image-path`로 지정한 로컬 JPG/PNG를 분석한다. 현재 FastAPI 라우터의 제공사를 Gemini로 전환한 것은 아니다.
 - Gemini 구조화 출력은 `response_json_schema=ModelOutput.model_json_schema()`로 요청하고 `ModelOutput.model_validate_json()`으로 응답을 검증한다. 문자 관찰값은 값이 `null`이거나 `observedText`가 없거나 원문에 정확히 포함되지 않으면 제외한다. `values` 누락도 현재 모델에서는 빈 목록으로 처리된다. `--debug-extraction`을 명시한 로컬 실행에서만 원시 응답·파싱 결과·제외 사유를 출력한다. 이 출력에는 분석 원문이 포함될 수 있으며 운영 로그로 사용하지 않는다.
 - **기존 직접 API 비교 기준:** `app/llm/`, [llm_api_validation.md](llm_api_validation.md), [provider_comparison.csv](provider_comparison.csv), [llm_handoff_IF02.md](llm_handoff_IF02.md)를 보존한다. 기존 API 접근 검증 보고와 이번 LangGraph 검증 범위를 구분한다.
-- **사진은 YOLO+OCR+룰 전용:** 사진이나 임시 URL을 Bedrock에 전달하지 않는다. 현재 사진 경로의 자리에는 모델·OCR이 연결되지 않았으므로 처리 완료 ID를 만들지 않는다. 판독 결과는 `RawObservation`으로 연결하며 Spring의 저장·조회까지 검증한 뒤 사진 실연 여부를 결정한다.
+- **사진은 YOLO+OCR+룰 전용:** [사진 분석 설정](photo_intake.md)에서 팀 S3 버킷의 임시 URL만 허용하고, 로컬 판독 결과를 `RawObservation`으로 전달한다. Bedrock에는 사진과 URL을 보내지 않는다. 비활성화 또는 다운로드·판독 실패는 처리 완료로 기록하지 않는다. 실제 Dev에서 Spring 저장·조회까지 검증한 뒤 사진 실연 여부를 결정한다.
 - RAG는 Node가 별도 검색 함수를 호출하는 경계만 만든다. 제공된 저장소에 매뉴얼 인덱스/검색 구현이 없어 기본 구현은 빈 결과를 반환한다. 자료가 없을 때 해석을 생성하지 않으며 임의 예제 설명서를 코드에 넣지 않는다.
 - 모델 학습·양자화·작업시간 추정·일정 계산·예약 API 호출·알림 생성·사장님 이관 상태 변경 등은 여기서 구현하지 않는다.
 

@@ -1,7 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,8 +29,26 @@ class Settings(BaseSettings):
     # 기존 OpenAI 직접 API 실험용. FastAPI 서비스에서는 사용하지 않는다.
     openai_model: str | None = None
     bedrock_model_id: str | None = None
+    photo_s3_bucket: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+    photo_s3_region: str = Field(default="ap-northeast-2", pattern=r"^[a-z]{2}(?:-[a-z]+)+-\d+$")
+    photo_yolo_model: Path | None = None
+    photo_yolo_prompts: Path | None = None
+    photo_ocr_models_dir: Path | None = None
     # Spring 시도당 30초보다 짧게 유지한다. 문자·사진 전체가 공유하고 내부 재시도는 없다.
     intake_timeout_seconds: float = Field(default=25.0, gt=0, lt=30)
+
+    @model_validator(mode="after")
+    def require_photo_config(self):
+        if any(
+            (
+                self.photo_s3_bucket,
+                self.photo_yolo_model,
+                self.photo_ocr_models_dir,
+                self.photo_yolo_prompts,
+            )
+        ) and not all((self.photo_s3_bucket, self.photo_yolo_model, self.photo_ocr_models_dir)):
+            raise ValueError("사진 분석에는 S3 버킷, YOLO 모델, OCR 모델 경로가 필요합니다")
+        return self
 
 
 @lru_cache

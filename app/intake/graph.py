@@ -137,7 +137,9 @@ def build_workflow(
         }
 
     def extract_message(state: IntakeState) -> dict:
-        messages = [m for m in state["request"].messages if m.sender == "CUSTOMER"]
+        messages = [
+            m for m in state["request"].messages if m.sender == "CUSTOMER" and m.content.strip()
+        ]
         if messages and callable(getattr(type(provider), "extract_request", None)):
             raw = provider.extract_request(state["request"])
         else:
@@ -145,7 +147,9 @@ def build_workflow(
         return message_update(state, raw)
 
     async def aextract_message(state: IntakeState) -> dict:
-        messages = [m for m in state["request"].messages if m.sender == "CUSTOMER"]
+        messages = [
+            m for m in state["request"].messages if m.sender == "CUSTOMER" and m.content.strip()
+        ]
         if messages and callable(getattr(type(provider), "aextract_request", None)):
             raw = await provider.aextract_request(state["request"])
         else:

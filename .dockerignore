@@ -11,3 +11,8 @@
 tests
 docs
 *.md
+models/
+**/*.pt
+**/*.npz
+**/*.onnx
+**/*.pdiparams

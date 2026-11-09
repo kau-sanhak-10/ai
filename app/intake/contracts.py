@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 FieldKey = Literal["manufacturer", "model", "boiler_type", "error_code", "symptom"]
 Source = Literal["CUSTOMER", "PHOTO"]
@@ -47,13 +47,6 @@ class Message(ContractModel):
     content: str
     createdAt: str
 
-    @field_validator("content")
-    @classmethod
-    def ensure_nonblank_content(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("메시지 내용은 비어 있을 수 없습니다")
-        return value
-
 
 class Photo(ContractModel):
     photoId: int = Field(gt=0)
@@ -88,6 +81,27 @@ class AnalyzeRequest(ContractModel):
             raise ValueError("메시지 ID가 중복되었습니다")
         if len({photo.photoId for photo in self.photos}) != len(self.photos):
             raise ValueError("사진 ID가 중복되었습니다")
+        photo_messages = {photo.messageId for photo in self.photos}
+        for index, message in enumerate(self.messages):
+            # Spring serializes a photo-only customer message as content="".
+            if not message.content.strip() and not (
+                message.sender == "CUSTOMER"
+                and message.content == ""
+                and message.messageId in photo_messages
+            ):
+                raise ValidationError.from_exception_data(
+                    type(self).__name__,
+                    [
+                        {
+                            "type": "value_error",
+                            "loc": ("messages", index, "content"),
+                            "input": message.content,
+                            "ctx": {
+                                "error": ValueError("사진이 없는 메시지에는 내용이 필요합니다")
+                            },
+                        }
+                    ],
+                )
         if len({item.fieldKey for item in self.fields}) != len(self.fields):
             raise ValueError("현재 저장된 항목 키가 중복되었습니다")
         return self

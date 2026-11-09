@@ -1,6 +1,7 @@
 """Bedrock Converse 기반 Claude 어댑터. AWS 인증·리전은 SDK 기본 설정을 따른다."""
 
 import time
+from collections.abc import Callable
 from contextlib import closing
 from functools import partial
 
@@ -20,9 +21,11 @@ class BedrockExtractionProvider(StructuredExtractionProvider):
         model: str,
         *,
         timeout_seconds: float = 25.0,
+        photo_analyzer: Callable[[Photo, Callable[[], float]], Understanding] | None = None,
     ):
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self._photo_analyzer = photo_analyzer
         self.input_tokens = 0
         self.output_tokens = 0
         self.model_calls = 0
@@ -36,11 +39,14 @@ class BedrockExtractionProvider(StructuredExtractionProvider):
         return remaining
 
     def analyze_image(self, photo: Photo) -> Understanding | None:
-        # 사진은 YOLO/OCR 경로 전용이다. 미연결 상태는 처리 완료로 기록하지 않는다.
-        return None
+        if self._photo_analyzer is None:
+            return None
+        return self._photo_analyzer(photo, self._remaining)
 
     async def aanalyze_image(self, photo: Photo) -> Understanding | None:
-        return self.analyze_image(photo)
+        if self._photo_analyzer is None:
+            return None
+        return await anyio.to_thread.run_sync(self.analyze_image, photo, abandon_on_cancel=True)
 
     def _invoke(self, instructions: str, content: list[dict]) -> dict:
         if any(entry["type"] != "input_text" for entry in content):
