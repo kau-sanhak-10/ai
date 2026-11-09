@@ -190,6 +190,12 @@ class IntentEvidence(ContractModel):
     observedText: str = Field(min_length=1)
 
 
+class PhotoGuidance(ContractModel):
+    photoId: int = Field(gt=0)
+    target: Literal["LABEL", "DISPLAY", "UNKNOWN"]
+    reason: Literal["TARGET_NOT_VISIBLE", "SMALL_TEXT", "BLUR_LIKELY", "UNREADABLE"]
+
+
 class AnalyzeResult(ContractModel):
     requestId: str
     inquiryId: int
@@ -207,6 +213,7 @@ class AnalyzeResult(ContractModel):
     intent: str
     intentEvidence: IntentEvidence | None = None
     analyzedPhotoIds: list[int] = Field(default_factory=list)
+    photoGuidance: list[PhotoGuidance] = Field(default_factory=list)
     nextAction: NextAction
     reply: Reply
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -229,6 +236,7 @@ class Understanding(ContractModel):
     observations: list[RawObservation] = Field(default_factory=list)
     intent: Literal["ANSWER", "ASK_OWNER", "CALLBACK", "BOOK", "OTHER"] = "OTHER"
     intentEvidence: IntentEvidence | None = None
+    photoGuidance: PhotoGuidance | None = None
     workCategory: CategoryDecision = Field(
         default_factory=lambda: CategoryDecision(value=None, status="UNCONFIRMED")
     )

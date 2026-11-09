@@ -29,6 +29,7 @@ from app.intake.contracts import (
     ManualHit,
     NextAction,
     Photo,
+    PhotoGuidance,
     RawObservation,
     Reply,
     Safety,
@@ -48,6 +49,7 @@ class IntakeState(TypedDict, total=False):
     intent: str
     intentEvidence: IntentEvidence | None
     analyzedPhotoIds: list[int]
+    photoGuidance: list[PhotoGuidance]
     workCategory: CategoryDecision
     safety: Safety
     facts: list[Fact]
@@ -191,6 +193,13 @@ def build_workflow(
             "stage": "EXTRACT",
             "observations": observations,
             "analyzedPhotoIds": [photo_id for photo_id, raw in outputs if raw is not None],
+            "photoGuidance": [
+                raw.photoGuidance
+                for photo_id, raw in outputs
+                if raw is not None
+                and raw.photoGuidance is not None
+                and raw.photoGuidance.photoId == photo_id
+            ],
             "safety": Safety(flag=has_safety, reasons=list(dict.fromkeys(safety_reasons))),
         }
 
@@ -604,6 +613,36 @@ def build_workflow(
             content = "확인 가능한 제품별 매뉴얼 근거가 없어 단정하여 안내하기 어렵습니다."
         else:
             content = "현재 문의 내용을 확인했습니다."
+        req = state["request"]
+        # ponytail: count all previously processed photos, so the cap is conservative per inquiry.
+        if (
+            action.action in {"ASK_MORE_INFO", "CHECK_SCHEDULE", "COMPLETE"}
+            and len(req.processedPhotoIds) < rules.followupLimit
+        ):
+            latest = next(
+                (m.messageId for m in reversed(req.messages) if m.sender == "CUSTOMER"), None
+            )
+            latest_photos = {p.photoId for p in req.photos if p.messageId == latest}
+            guidance = next(
+                (g for g in reversed(state.get("photoGuidance", [])) if g.photoId in latest_photos),
+                None,
+            )
+            if guidance:
+                target_label = {
+                    "LABEL": "보일러 본체의 제품 라벨",
+                    "DISPLAY": "조절기 표시창",
+                    "UNKNOWN": "제품 라벨이나 조절기 표시창",
+                }[guidance.target]
+                retake = {
+                    "TARGET_NOT_VISIBLE": f"{target_label}이 화면에 들어오게 찍어 주세요.",
+                    "SMALL_TEXT": f"{target_label}의 글자가 크게 보이도록 가까이 찍어 주세요.",
+                    "BLUR_LIKELY": f"{target_label}에 초점을 맞추고 흔들리지 않게 찍어 주세요.",
+                    "UNREADABLE": f"{target_label} 글자가 선명하게 보이도록 찍어 주세요.",
+                }[guidance.reason]
+                content += (
+                    f" 사진을 다시 보낼 수 있다면 {retake}"
+                    " 다시 보내지 않아도 상담을 계속할 수 있어요."
+                )
         return {"stage": "SUMMARY", "reply": Reply(content=content), "interpretations": []}
 
     def validate_result(state: IntakeState) -> dict:
@@ -669,6 +708,7 @@ def build_workflow(
             intent=state["intent"],
             intentEvidence=state.get("intentEvidence"),
             analyzedPhotoIds=state.get("analyzedPhotoIds", []),
+            photoGuidance=state.get("photoGuidance", []),
             nextAction=state["nextAction"],
             reply=state["reply"],
         )

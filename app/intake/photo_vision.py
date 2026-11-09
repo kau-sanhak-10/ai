@@ -10,11 +10,18 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, urlsplit
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps, ImageStat
 
 from app.common.errors import BusinessException, ErrorCode
 from app.core.config import Settings
-from app.intake.contracts import Evidence, FieldKey, Photo, RawObservation, Understanding
+from app.intake.contracts import (
+    Evidence,
+    FieldKey,
+    Photo,
+    PhotoGuidance,
+    RawObservation,
+    Understanding,
+)
 from app.intake.vision_rules import extract
 from app.intake.vision_text import extract_with_text, model_label_tokens, visual_regions
 
@@ -163,6 +170,50 @@ def _inside(inner, outer):
     )
 
 
+def unreadable_target(
+    image: Image.Image, result: dict, detections: list, tokens: list
+) -> dict | None:
+    photo_type = result["photo_type"]
+    if photo_type in {"NOT_BOILER", "UNKNOWN"}:
+        return {"target": "UNKNOWN", "reason": "TARGET_NOT_VISIBLE"}
+    if photo_type == "CONTROLLER":
+        # 판독된 숫자·온도만 있는 정상 표시창은 실패나 오류로 취급하지 않는다.
+        if result.get("display_text") or result.get("error_code"):
+            return None
+        target, box_type = "DISPLAY", "display"
+    else:
+        if result.get("model"):
+            return None
+        target, box_type = "LABEL", "boiler_nameplate"
+    box = max(
+        (d for d in detections if d["class"] == box_type and d.get("score", 0.5) >= 0.5),
+        key=lambda d: d.get("score", 0.5),
+        default=None,
+    )
+    bounds = box["bbox"] if box else ([0, 0, 1, 1] if photo_type == "NAMEPLATE" else None)
+    if not bounds:
+        return {"target": target, "reason": "TARGET_NOT_VISIBLE"}
+    scale = min(960 / max(image.size), 1)
+    text_heights = [
+        (t["bbox"][3] - t["bbox"][1]) * image.height * scale
+        for t in tokens
+        if _inside(t["bbox"], bounds)
+    ]
+    if bounds[2] - bounds[0] < 0.18 or (text_heights and max(text_heights) < 14):
+        return {"target": target, "reason": "SMALL_TEXT"}
+    gray = image.crop(
+        tuple(round(n * d) for n, d in zip(bounds, image.size * 2, strict=True))
+    ).convert("L")
+    gray.thumbnail((384, 384))
+    if min(gray.size) > 4:
+        low, high = gray.getextrema()
+        edges = gray.filter(ImageFilter.FIND_EDGES).crop((1, 1, gray.width - 1, gray.height - 1))
+        # ponytail: edge strength only suggests blur; calibrate on labeled phone photos.
+        if high - low >= 25 and ImageStat.Stat(edges).var[0] < 45:
+            return {"target": target, "reason": "BLUR_LIKELY"}
+    return {"target": target, "reason": "UNREADABLE"}
+
+
 def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[], float]) -> dict:
     """YOLO 영역과 OCR 상자의 좌표를 같은 사진 위에서 대조한다."""
     import numpy as np
@@ -195,13 +246,14 @@ def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[],
     negatives = [d for d in strong if d["class"] in {"gas_meter", "water_meter", "ac_remote"}]
     targets = objects or plates
     if negatives or len(targets) > 1:
-        return extract(
+        result = extract(
             {
                 "object_type": "UNKNOWN",
                 "photo_type": "NOT_BOILER" if negatives and not targets else "UNKNOWN",
                 "regions": [],
             }
         )[0]
+        return {**result, "guidance": unreadable_target(image, result, detections, [])}
 
     remaining()
     # ponytail: one bounded OCR pass, then match text boxes to YOLO regions.
@@ -274,14 +326,18 @@ def extract_pixels(image: Image.Image, detector, reader, remaining: Callable[[],
             }
         )[0]
         if any(primary[key] for key in ("manufacturer", "model", "controller_model", "error_code")):
-            return primary
-    return extract_with_text(detections, tokens, visual_regions(image))
+            return {**primary, "guidance": unreadable_target(image, primary, detections, tokens)}
+    visual = visual_regions(image)
+    result = extract_with_text(detections, tokens, visual)
+    return {**result, "guidance": unreadable_target(image, result, detections + visual, tokens)}
 
 
 def photo_observations(result: dict, photo_id: int) -> Understanding:
+    guidance = result.get("guidance")
+    photo_guidance = PhotoGuidance(photoId=photo_id, **guidance) if guidance else None
     keys: tuple[FieldKey, ...] = ("manufacturer", "model", "error_code")
     if result["photo_type"] == "NOT_BOILER":
-        return Understanding()
+        return Understanding(photoGuidance=photo_guidance)
     if result["photo_type"] == "CONTROLLER":
         keys = ("manufacturer", "controller_model", "error_code")
     observations = []
@@ -309,7 +365,7 @@ def photo_observations(result: dict, photo_id: int) -> Understanding:
                 unconfirmedReason=None if value else "PHOTO_UNREADABLE",
             )
         )
-    return Understanding(observations=observations)
+    return Understanding(observations=observations, photoGuidance=photo_guidance)
 
 
 def analyze_photo(

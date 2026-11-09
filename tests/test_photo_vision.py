@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.intake.contracts import Message
-from app.intake.photo_vision import decode_photo, validate_s3_photo_url
+from app.intake.photo_vision import decode_photo, unreadable_target, validate_s3_photo_url
 from app.intake.vision_rules import extract
 from app.intake.vision_text import extract_with_text
 from app.main import create_app
@@ -88,6 +88,31 @@ def test_only_explicit_display_error_is_reported(screen_text, expected):
     assert result["error_code"] == expected
 
 
+def test_guidance_distinguishes_target_size_and_blur_without_flagging_readable_display():
+    image = Image.linear_gradient("L").resize((640, 640))
+    body = {"photo_type": "BODY"}
+    assert unreadable_target(image, body, [], []) == {
+        "target": "LABEL",
+        "reason": "TARGET_NOT_VISIBLE",
+    }
+    assert (
+        unreadable_target(
+            image,
+            body,
+            [
+                {"class": "boiler_nameplate", "bbox": [0.4, 0.4, 0.5, 0.5], "score": 0.9},
+            ],
+            [],
+        )["reason"]
+        == "SMALL_TEXT"
+    )
+    assert unreadable_target(image, {"photo_type": "NAMEPLATE"}, [], [])["reason"] == "BLUR_LIKELY"
+    assert (
+        unreadable_target(image, {"photo_type": "CONTROLLER", "display_text": "28℃"}, [], [])
+        is None
+    )
+
+
 def test_controller_label_row_does_not_overwrite_boiler_or_display():
     texts = [
         ("실내온도조절기", [0.1, 0.1, 0.5, 0.2]),
@@ -126,6 +151,7 @@ def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
             "model": "WRONG-1",
             "controller_model": "CTRL-1",
             "error_code": None,
+            "guidance": {"target": "DISPLAY", "reason": "SMALL_TEXT"},
         },
     )
     request = payload(photos=[photo])
@@ -139,6 +165,10 @@ def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
     assert first.status_code == 200
     result = first.json()["result"]
     assert result["analyzedPhotoIds"] == [27]
+    assert result["photoGuidance"] == [{"photoId": 27, "target": "DISPLAY", "reason": "SMALL_TEXT"}]
+    assert result["nextAction"]["action"] == "ASK_MORE_INFO"
+    assert "가까이 찍어 주세요" in result["reply"]["content"]
+    assert "다시 보내지 않아도" in result["reply"]["content"]
     assert [
         (f["fieldKey"], f["value"], f["unconfirmedReason"], f["evidence"]["photoId"])
         for f in result["facts"]
@@ -150,10 +180,17 @@ def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
     request.processedPhotoIds = [27]
     again = client.post(path, json=request.model_dump(mode="json"), headers=headers)
     assert again.json()["result"]["analyzedPhotoIds"] == []
+    assert again.json()["result"]["photoGuidance"] == []
     assert fetch.call_count == 1
     aws.assert_not_called()
+
+    request.processedPhotoIds = [25, 26]
+    capped = client.post(path, json=request.model_dump(mode="json"), headers=headers)
+    assert capped.status_code == 200
+    assert capped.json()["result"]["photoGuidance"][0]["photoId"] == 27
+    assert "다시 보내지 않아도" not in capped.json()["result"]["reply"]["content"]
 
     request.processedPhotoIds = []
     request.photos[0].imageUrl = URL.replace(BUCKET, "different")
     invalid = client.post(path, json=request.model_dump(mode="json"), headers=headers)
-    assert invalid.status_code == 400 and fetch.call_count == 1
+    assert invalid.status_code == 400 and fetch.call_count == 2
