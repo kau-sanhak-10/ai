@@ -14,7 +14,7 @@ _CLAUSE_BREAK = re.compile(r"[.!?。！？,，;；\n]+|하지만|그런데|대�
 _REFUSAL = re.compile(
     r"하지마|주지마|하지말|주지말|말아|말았|필요없|원하지않|원치않|싫|사양|거절|"
     r"요청한적없|부탁한적없|하지않|주지않|드리지않|말고|"
-    r"안해|안주|안받|않아도|않으셔도|필요하지않"
+    r"안해|안주|안받|않아도|않으셔도|필요하지않|싶지않|싶진않"
 )
 _PAST_OR_REPORT = re.compile(
     r"했|했었|하셨|해주셨|해줬|주셨|주었|받았|드렸|해주신|"
@@ -26,8 +26,8 @@ _REQUEST = re.compile(
     r"가능(?:할|한|해|합)|할수있|될까요|해도될"
 )
 _OWNER_TOPIC = re.compile(r"사장님|담당자|상담원|직원|사람|직접")
-_CONTACT_ACTION = re.compile(r"연결|상담|통화|대화|얘기|이야기|바꿔|바꾸어|전화")
-_CALLBACK_TOPIC = re.compile(r"전화|연락|회신|콜백")
+_CONTACT_ACTION = re.compile(r"연결|상담|통화|대화|얘기|이야기|바꿔|바꾸어|전화(?!번호)")
+_CALLBACK_TOPIC = re.compile(r"전화(?!번호)|연락(?!처|번호)|회신|콜백")
 
 
 def _is_request(clause: str, intent: str) -> bool:

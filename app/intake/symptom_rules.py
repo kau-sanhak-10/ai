@@ -25,9 +25,11 @@ _OBSERVABLE = re.compile(
 # ponytail: only explicit current reports bypass the model; ambiguous phrasing uses Bedrock.
 GAS_LEAK_REASON = "POSSIBLE_GAS_LEAK"
 _GAS_REPORT = re.compile(
+    r"(?:지금|갑자기)?"
     r"(?:(?:보일러(?:가?있는곳|주변|근처)?|집|집안|실내)에서)?"
     r"(?:지금|갑자기)?"
-    r"(?:가스냄새(?:가|는)?(?:좀|많이|계속|강하게)?(?:나요|납니다|나는데요|나는것같아요)|"
+    r"(?:가스냄새(?:가|는)?(?:좀|조금|많이|계속|강하게|심하게|너무|자꾸)*"
+    r"(?:나요|납니다|나는것같아요|나고있어요|나고있습니다|나는데.*|나서.+)|"
     r"가스(?:가)?(?:새요|샙니다|새는것같아요|누출되는것같아요))"
 )
 
