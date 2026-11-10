@@ -5,6 +5,8 @@ description = "일로 AI 판단 서버 (FastAPI)"
 readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
+    "anyio>=4.15.1",
+    "boto3>=1.43.126",
     "fastapi>=0.142.2",
     "google-genai>=2.32.0",
     "langgraph>=1.2.14",
@@ -20,6 +22,26 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.10",
 ]
+vision = [
+    "numpy==2.3.5",
+    "opencv-python==4.10.0.84",
+    "opencv-contrib-python==4.10.0.84",
+    "paddleocr==3.7.0",
+    "paddlepaddle==3.3.1",
+    "paddlex==3.7.2",
+    "torch",
+    "torchvision",
+    "ultralytics==8.4.175",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+torchvision = { index = "pytorch-cpu", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.uv]
 # 배포용 라이브러리가 아니라 서버 애플리케이션이므로 패키지로 빌드하지 않는다

@@ -1,0 +1,13 @@
+{
+  "version": "rules-local-v1",
+  "followupLimit": 2,
+  "initialQuestionCount": 1,
+  "commonRequiredFields": ["symptom"],
+  "conditionalRequiredFieldsByWorkCategory": {
+    "INSPECTION": [],
+    "REPAIR": [],
+    "LEAK": [],
+    "REPLACEMENT": []
+  },
+  "referenceFields": ["manufacturer", "model", "boiler_type", "error_code", "controller_model"]
+}

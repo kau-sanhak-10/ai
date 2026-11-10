@@ -231,6 +231,9 @@ __marimo__/
 *.pth
 *.bin
 *.onnx
+*.npz
+*.pdiparams
+models/
 *.safetensors
 *.ckpt
 *.h5
