@@ -20,7 +20,17 @@ def message(message_id, content, sender="CUSTOMER"):
     return Message(messageId=message_id, sender=sender, content=content, createdAt="2026-11-06")
 
 
-def test_api_passes_current_state_and_question_context_in_one_model_call(monkeypatch):
+@pytest.mark.parametrize(
+    "value,answer",
+    [
+        ("온수가 안 나와요", "네, 안 나와요"),
+        ("온수 불작동", "네, 안 나와요"),
+        ("온수 불작동/난방 불작동", "온수도 안 나오고 난방도 안 돼요"),
+    ],
+)
+def test_api_passes_current_state_and_question_context_in_one_model_call(
+    monkeypatch, value, answer
+):
     monkeypatch.setenv("INTERNAL_KEY", "test-internal-key")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "test-model")
     req = payload(
@@ -37,14 +47,14 @@ def test_api_passes_current_state_and_question_context_in_one_model_call(monkeyp
     req.messages = [
         message(898, "수리를 받고 싶어요"),
         message(899, "온수가 안 나오나요?", "AI"),
-        message(900, "네, 안 나와요"),
+        message(900, answer),
     ]
     output = ModelOutput(
         values=[
             ExtractedValue(
                 fieldKey="symptom",
-                value="온수가 안 나와요",
-                observedText="안 나와요",
+                value=value,
+                observedText=answer,
                 messageId=900,
             )
         ],
@@ -60,6 +70,9 @@ def test_api_passes_current_state_and_question_context_in_one_model_call(monkeyp
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["nextAction"]["action"] == "CHECK_SCHEDULE"
+    assert result["facts"][0]["value"] == value
+    assert result["facts"][0]["status"] == "CONFIRMED"
+    assert result["facts"][0]["unconfirmedReason"] is None
     assert result["facts"][0]["evidence"]["messageId"] == 900
     assert result["promptVersion"] == PROMPT_VERSION
     assert result["usage"]["inputTokens"] == 12
@@ -163,11 +176,15 @@ def correction_request(source="CUSTOMER", *, correction_id=900, explicit=True, f
     return req, observation
 
 
-def test_explicit_customer_correction_replaces_previous_statement_without_reasking():
+@pytest.mark.parametrize("value", ["온수가 안 나와요", "온수 불작동"])
+def test_explicit_customer_correction_replaces_previous_statement_without_reasking(value):
     req, observation = correction_request()
+    observation["value"] = value
     result = run(req, FakeProvider(text_facts=[observation]))
     assert result.conflicts == []
-    assert result.facts[0].value == "온수가 안 나와요"
+    assert result.facts[0].value == value
+    assert result.facts[0].status == "CONFIRMED"
+    assert result.facts[0].unconfirmedReason is None
     assert result.facts[0].evidence.messageId == 900
     assert result.nextAction.action == "CHECK_SCHEDULE"
 
@@ -181,8 +198,10 @@ def test_explicit_customer_correction_replaces_previous_statement_without_reaski
         {"flag": False},
     ],
 )
-def test_correction_does_not_bypass_owner_photo_or_provenance_guards(options):
+@pytest.mark.parametrize("value", ["온수가 안 나와요", "온수 불작동"])
+def test_correction_does_not_bypass_owner_photo_or_provenance_guards(options, value):
     req, observation = correction_request(**options)
+    observation["value"] = value
     result = run(req, FakeProvider(text_facts=[observation]))
     assert result.conflicts
     assert result.nextAction.action == "ASK_MORE_INFO"
@@ -221,8 +240,10 @@ def test_old_message_cannot_apply_a_new_correction():
     assert not result.conflicts
 
 
-def test_previous_values_do_not_reappear_after_spring_saves_customer_correction():
+@pytest.mark.parametrize("value", ["온수가 안 나와요", "온수 불작동"])
+def test_previous_values_do_not_reappear_after_spring_saves_customer_correction(value):
     req, observation = correction_request()
+    observation["value"] = value
     first = run(req, FakeProvider(text_facts=[observation]))
     fact = first.facts[0]
     req.fields[0] = req.fields[0].model_copy(

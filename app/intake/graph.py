@@ -632,11 +632,9 @@ def build_workflow(
         else:
             content = "현재 문의 내용을 확인했습니다."
         req = state["request"]
-        # ponytail: count all previously processed photos, so the cap is conservative per inquiry.
-        if (
-            action.action in {"ASK_MORE_INFO", "CHECK_SCHEDULE", "COMPLETE"}
-            and len(req.processedPhotoIds) < rules.followupLimit
-        ):
+        # 판독 상태만 설명한다. targetFieldKeys에 없는 재촬영 요청을 덧붙이면
+        # Spring의 항목별 askCounts에 잡히지 않는 보완 질문이 생긴다.
+        if action.action in {"ASK_MORE_INFO", "CHECK_SCHEDULE", "COMPLETE"}:
             latest = next(
                 (m.messageId for m in reversed(req.messages) if m.sender == "CUSTOMER"), None
             )
@@ -651,19 +649,18 @@ def build_workflow(
                     "DISPLAY": "조절기 표시창",
                     "UNKNOWN": "제품 라벨이나 조절기 표시창",
                 }[guidance.target]
-                retake = {
-                    "TARGET_NOT_VISIBLE": f"{target_label}이 화면에 들어오게 찍어 주세요.",
-                    "SMALL_TEXT": f"{target_label}의 글자가 크게 보이도록 가까이 찍어 주세요.",
-                    "BLUR_LIKELY": f"{target_label}에 초점을 맞추고 흔들리지 않게 찍어 주세요.",
-                    "UNREADABLE": f"{target_label} 글자가 선명하게 보이도록 찍어 주세요.",
-                    "FILE_UNREADABLE": "정상적으로 열리는 JPG·PNG 사진을 골라 주세요.",
+                photo_status = {
+                    "TARGET_NOT_VISIBLE": f"첨부한 사진에서 {target_label}을 확인하지 못했어요.",
+                    "SMALL_TEXT": (
+                        f"첨부한 사진은 글자가 작아 {target_label}의 일부 정보를 읽지 못했어요."
+                    ),
+                    "BLUR_LIKELY": (
+                        f"첨부한 사진에서 {target_label}의 일부 글자를 선명하게 읽지 못했어요."
+                    ),
+                    "UNREADABLE": f"첨부한 사진에서 {target_label}의 일부 정보를 읽지 못했어요.",
+                    "FILE_UNREADABLE": "첨부한 사진 파일을 읽지 못했어요.",
                 }[guidance.reason]
-                if guidance.reason == "FILE_UNREADABLE":
-                    content += " 첨부한 사진 파일을 읽지 못했어요."
-                content += (
-                    f" 사진을 다시 보낼 수 있다면 {retake}"
-                    " 다시 보내지 않아도 상담을 계속할 수 있어요."
-                )
+                content += f" {photo_status}"
         return {"stage": "SUMMARY", "reply": Reply(content=content), "interpretations": []}
 
     def validate_result(state: IntakeState) -> dict:

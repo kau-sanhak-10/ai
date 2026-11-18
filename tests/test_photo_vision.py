@@ -170,7 +170,8 @@ def test_corrupt_photo_preserves_text_and_does_not_force_handoff(monkeypatch):
     assert result["photoGuidance"] == [
         {"photoId": 27, "target": "UNKNOWN", "reason": "FILE_UNREADABLE"}
     ]
-    assert "다시 보내지 않아도" in result["reply"]["content"]
+    assert "첨부한 사진 파일을 읽지 못했어요" in result["reply"]["content"]
+    assert "다시 보낼" not in result["reply"]["content"]
     assert result["analyzedPhotoIds"] == [27]
     request.processedPhotoIds = [27]
     retry = client.post(path, json=request.model_dump(mode="json"), headers=headers)
@@ -266,8 +267,8 @@ def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
     assert result["analyzedPhotoIds"] == [27]
     assert result["photoGuidance"] == [{"photoId": 27, "target": "DISPLAY", "reason": "SMALL_TEXT"}]
     assert result["nextAction"]["action"] == "ASK_MORE_INFO"
-    assert "가까이 찍어 주세요" in result["reply"]["content"]
-    assert "다시 보내지 않아도" in result["reply"]["content"]
+    assert "글자가 작아" in result["reply"]["content"]
+    assert "찍어 주세요" not in result["reply"]["content"]
     assert [
         (f["fieldKey"], f["value"], f["unconfirmedReason"], f["evidence"]["photoId"])
         for f in result["facts"]
@@ -287,7 +288,8 @@ def test_service_keeps_controller_model_separate_from_boiler_model(monkeypatch):
     capped = client.post(path, json=request.model_dump(mode="json"), headers=headers)
     assert capped.status_code == 200
     assert capped.json()["result"]["photoGuidance"][0]["photoId"] == 27
-    assert "다시 보내지 않아도" not in capped.json()["result"]["reply"]["content"]
+    assert "글자가 작아" in capped.json()["result"]["reply"]["content"]
+    assert "찍어 주세요" not in capped.json()["result"]["reply"]["content"]
 
     request.processedPhotoIds = []
     request.photos[0].imageUrl = URL.replace(BUCKET, "different")

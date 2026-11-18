@@ -64,7 +64,13 @@ class AnalyzeRequest(ContractModel):
     handlerMode: Literal["AI", "OWNER"]
     business: Business
     fields: list[ExistingField]
-    askCounts: dict[str, int] = Field(description="최초 질문을 제외한 항목별 보완 요청 횟수")
+    askCounts: dict[str, int] = Field(
+        description=(
+            "최초 질문을 제외한 항목별 보완 요청 횟수. 최초 질문 전에는 키 생략, "
+            "최초 질문 후 0, 보완 1회 후 1, 보완 2회 후 2. "
+            "Spring이 적용한 ASK_MORE_INFO·REQUEST_IMAGE의 대상 항목별로 문자·사진 요청을 합산"
+        )
+    )
     messages: list[Message]
     photos: list[Photo]
     safetyFlag: bool
