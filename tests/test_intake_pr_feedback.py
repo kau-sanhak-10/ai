@@ -196,6 +196,35 @@ def test_field_evidence_does_not_imply_whole_photo_is_processed():
         ("온수 문의예요. 보일러가 이상해요", False),
         ("전원이 안 들어와요", True),
         ("난방은 되고 온수만 안 나와요", True),
+        ("방이 안 따뜻해져요", True),
+        ("방이 안 따뜻해짐", True),
+        ("난방이 안 된다", True),
+        ("난방 불충분", True),
+        ("온수가 안 나온다", True),
+        ("방이 따뜻해지지 않아요", True),
+        ("실내가 따뜻하지 않아요", True),
+        ("방바닥이 계속 안 따뜻해요", True),
+        ("방이 안 돼요", False),
+        ("방이 이상해요", False),
+        ("방이 따뜻해요", False),
+        ("방이 따뜻한지 모르겠어요", False),
+        ("난방 점검 부탁드려요", False),
+        ("온수는 잘 나오는데 방이 이상해요", False),
+        ("온수 불작동", True),
+        ("난방 불작동", True),
+        ("온수 불작동/난방 불작동", True),
+        ("난방 불작동, 온수 불작동", True),
+        ("온수 불작동이 아니라 난방 불작동이에요", True),
+        ("온수 불작동 아님", False),
+        ("온수 불작동이 아니에요", False),
+        ("온수 불작동은 아닙니다", False),
+        ("온수가 안 나오는 건 아니에요", False),
+        ("난방이 안 되는 게 아니에요", False),
+        ("온수 불작동인지 모르겠어요", False),
+        ("난방 불작동인지는 잘 모르겠어요", False),
+        ("온수가 안 나오는지 모르겠어요", False),
+        ("온수 불작동 아님, 난방 불작동", True),
+        ("온수 불작동인지 모르겠지만 난방은 안 돼요", True),
     ],
 )
 def test_symptom_needs_a_target_and_observed_state(value, specific):
@@ -231,6 +260,62 @@ def test_topic_only_symptom_can_be_clarified_without_conflict(value):
     assert result.conflicts == []
     assert result.facts[0].status == "CONFIRMED"
     assert result.nextAction.action == "CHECK_SCHEDULE"
+
+
+@pytest.mark.parametrize("value", ["온수 불작동", "난방 불작동", "온수 불작동/난방 불작동"])
+@pytest.mark.parametrize("reextract", [False, True])
+def test_saved_normalized_symptom_is_not_asked_again(value, reextract):
+    req = payload(
+        fields=[
+            {
+                "fieldKey": "symptom",
+                "value": value,
+                "source": "CUSTOMER",
+                "status": "CONFIRMED",
+                "messageId": 899,
+            }
+        ]
+    )
+    observations = [{**symptom(), "value": value, "evidence": {"messageId": 899}}]
+    result = run(req, FakeProvider(text_facts=observations if reextract else []))
+    assert result.facts == []
+    assert result.conflicts == []
+    assert result.nextAction.action == "CHECK_SCHEDULE"
+
+
+@pytest.mark.parametrize("value", ["온수 불작동", "난방 불작동", "온수 불작동/난방 불작동"])
+def test_normalized_answer_confirms_previously_unconfirmed_symptom(value):
+    req = payload(
+        fields=[
+            {
+                "fieldKey": "symptom",
+                "value": value,
+                "source": "CUSTOMER",
+                "status": "UNCONFIRMED",
+                "unconfirmedReason": "NOT_PROVIDED",
+                "messageId": 899,
+            }
+        ]
+    )
+    result = run(req, FakeProvider(text_facts=[{**symptom(), "value": value}]))
+    assert result.conflicts == []
+    assert result.facts[0].value == value
+    assert result.facts[0].status == "CONFIRMED"
+    assert result.facts[0].unconfirmedReason is None
+    assert result.nextAction.action == "CHECK_SCHEDULE"
+
+
+def test_distinct_symptom_observations_still_require_confirmation():
+    result = run(
+        payload(),
+        FakeProvider(
+            text_facts=[{**symptom(), "value": value} for value in ("온수 불작동", "난방 불작동")]
+        ),
+    )
+    assert result.facts == []
+    assert [conflict.fieldKey for conflict in result.conflicts] == ["symptom"]
+    assert result.nextAction.targetFieldKeys == ["symptom"]
+    assert result.nextAction.action == "ASK_MORE_INFO"
 
 
 @pytest.mark.parametrize(
