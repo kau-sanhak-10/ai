@@ -46,11 +46,20 @@ _GAS_REPORT = re.compile(
     r"(?:나요|납니다|나는것같아요|나고있어요|나고있습니다|나는데.*|나서.+)|"
     r"가스(?:가)?(?:새요|샙니다|새는것같아요|누출되는것같아요))"
 )
+_GAS_CONNECTIVE = re.compile(r"(?:고|는데|지만|며|면서|다가)\s+|\s+(?:그리고|그런데|하지만)\s+")
 
 
 def reports_possible_gas_leak(value: str) -> bool:
     for clause, end in re.findall(r"([^.!?。！？,，;；\n]+)([.!?。！？,，;；\n]?)", value):
-        if end not in {"?", "？"} and _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause)):
+        if end in {"?", "？"}:
+            continue
+        if _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause)):
+            return True
+        # Keep the explicit report check after a connective; quoted examples are not reports.
+        if not any(mark in clause for mark in "\"'“”‘’「」『』") and any(
+            _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause[m.end() :]))
+            for m in _GAS_CONNECTIVE.finditer(clause)
+        ):
             return True
     return False
 
