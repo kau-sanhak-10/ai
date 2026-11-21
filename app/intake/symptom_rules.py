@@ -47,20 +47,32 @@ _GAS_REPORT = re.compile(
     r"가스(?:가)?(?:새요|샙니다|새는것같아요|누출되는것같아요))"
 )
 _GAS_CONNECTIVE = re.compile(r"(?:고|는데|지만|며|면서|다가)\s+|\s+(?:그리고|그런데|하지만)\s+")
+_GAS_QUOTED = re.compile(
+    r""" "[^"\n]*" | '[^'\n]*' | “[^”\n]*” | ‘[^’\n]*’ | 「[^」\n]*」 | 『[^』\n]*』 """, re.X
+)
+_GAS_CURRENT_DENIAL = re.compile(
+    r"(?:는데|지만|며|고|[,，])(?:지금|현재|이제)(?:은|는)?(?:(?:가스)?냄새(?:가|는)?)?"
+    r"(?:안나요|안납니다|나지않아요|나지않습니다|없어요|없습니다)$"
+)
 
 
 def reports_possible_gas_leak(value: str) -> bool:
-    for clause, end in re.findall(r"([^.!?。！？,，;；\n]+)([.!?。！？,，;；\n]?)", value):
-        if end in {"?", "？"}:
+    # Mask paired quotes before splitting; keep an adjacent, unquoted report.
+    for sentence, end in re.findall(
+        r"([^.!?。！？;；\n]+)([.!?。！？;；\n]?)", _GAS_QUOTED.sub("※", value)
+    ):
+        if _GAS_CURRENT_DENIAL.search(re.sub(r"\s+", "", sentence)):
             continue
-        if _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause)):
-            return True
-        # Keep the explicit report check after a connective; quoted examples are not reports.
-        if not any(mark in clause for mark in "\"'“”‘’「」『』") and any(
-            _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause[m.end() :]))
-            for m in _GAS_CONNECTIVE.finditer(clause)
-        ):
-            return True
+        for clause, comma in re.findall(r"([^,，]+)([,，]?)", sentence):
+            if (not comma and end in {"?", "？"}) or any(
+                mark in clause for mark in "\"'“”‘’「」『』"
+            ):
+                continue
+            if _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause)) or any(
+                _GAS_REPORT.fullmatch(re.sub(r"\s+", "", clause[m.end() :]))
+                for m in _GAS_CONNECTIVE.finditer(clause)
+            ):
+                return True
     return False
 
 
