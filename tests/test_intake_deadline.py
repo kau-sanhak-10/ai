@@ -306,7 +306,7 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
         "온수도 안 나오고 가스 냄새가 나요?",
         "온수도 안 나오고 가스 냄새는 안 나요.",
         "온수도 안 나오고 가스 냄새가 나면 어떻게 해요?",
-        '“온수도 안 나오고 가스 냄새가 나요.”라는 예문이에요.',
+        "“온수도 안 나오고 가스 냄새가 나요.”라는 예문이에요.",
     ],
 )
 def test_non_reports_do_not_force_gas_handoff(text):
