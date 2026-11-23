@@ -5,7 +5,7 @@ import re
 
 from app.intake.contracts import AnalyzeRequest, Message
 
-PROMPT_VERSION = "intake-ai02-v2"
+PROMPT_VERSION = "intake-ai05-v3"
 
 
 def make_text_input(messages: list[Message], request: AnalyzeRequest | None = None) -> str:

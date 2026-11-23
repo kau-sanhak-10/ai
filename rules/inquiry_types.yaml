@@ -1,5 +1,5 @@
 {
-  "version": "rules-local-v1",
+  "version": "rules-ai05-v1",
   "followupLimit": 2,
   "initialQuestionCount": 1,
   "commonRequiredFields": ["symptom"],

@@ -165,8 +165,12 @@ class Interpretation(ContractModel):
 
 
 class CategoryDecision(ContractModel):
-    value: WorkCategory | None
-    status: Literal["CONFIRMED", "UNCONFIRMED"]
+    value: WorkCategory | None = Field(
+        description="고객이 요청한 작업 종류. 고장 원인이나 진단이 아님"
+    )
+    status: Literal["CONFIRMED", "UNCONFIRMED"] = Field(
+        description="고객이 작업 종류를 명시적으로 요청했으면 CONFIRMED. 진단 확정 여부와 무관"
+    )
 
 
 class Safety(ContractModel):
