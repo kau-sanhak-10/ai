@@ -51,8 +51,13 @@ _GAS_QUOTED = re.compile(
     r""" "[^"\n]*" | '[^'\n]*' | “[^”\n]*” | ‘[^’\n]*’ | 「[^」\n]*」 | 『[^』\n]*』 """, re.X
 )
 _GAS_CURRENT_DENIAL = re.compile(
-    r"(?:는데|지만|며|고|[,，])(?:지금|현재|이제)(?:은|는)?(?:(?:가스)?냄새(?:가|는)?)?"
+    r"(?:는데|지만|며|고|[,，])(?:지금|현재|이제)(?:은|는)?"
+    r"(?P<smell>(?:가스)?냄새(?:가|는)?)?"
     r"(?:안나요|안납니다|나지않아요|나지않습니다|없어요|없습니다)$"
+)
+_GAS_SUBJECT = re.compile(r"가스(?:냄새|(?:가)?새)")
+_OTHER_OBSERVATION_SUBJECT = re.compile(
+    r"(?:경보음|알림음|소리|소음|온수|냉수|물|연기|불꽃)(?:이|가|은|는|도|만)"
 )
 
 
@@ -61,8 +66,12 @@ def reports_possible_gas_leak(value: str) -> bool:
     for sentence, end in re.findall(
         r"([^.!?。！？;；\n]+)([.!?。！？;；\n]?)", _GAS_QUOTED.sub("※", value)
     ):
-        if _GAS_CURRENT_DENIAL.search(re.sub(r"\s+", "", sentence)):
-            continue
+        compact = re.sub(r"\s+", "", sentence)
+        if denial := _GAS_CURRENT_DENIAL.search(compact):
+            # A named denial of the smell wins; an implicit denial refers to the latest subject.
+            since_gas = _GAS_SUBJECT.split(compact[: denial.start()])[-1]
+            if denial["smell"] or not _OTHER_OBSERVATION_SUBJECT.search(since_gas):
+                continue
         for clause, comma in re.findall(r"([^,，]+)([,，]?)", sentence):
             if (not comma and end in {"?", "？"}) or any(
                 mark in clause for mark in "\"'“”‘’「」『』"

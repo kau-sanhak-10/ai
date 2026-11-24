@@ -230,6 +230,8 @@ def test_text_and_new_photo_start_before_either_finishes(monkeypatch):
         "gas_report_after_quoted_code",
         "gas_report_before_question",
         "gas_report_with_other_denial",
+        "gas_report_before_unrelated_current_denial",
+        "gas_report_with_unrelated_current_denial",
     ],
 )
 def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
@@ -269,6 +271,12 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
             "gas_report_after_quoted_code": "보일러에 'E1'이 뜨고 가스 냄새가 나서 어지러워요.",
             "gas_report_before_question": "가스 냄새가 나요, 어떻게 하죠?",
             "gas_report_with_other_denial": "가스 냄새가 나는데 소리는 지금은 안 나요.",
+            "gas_report_before_unrelated_current_denial": (
+                "가스 냄새가 나요, 경보음이 났는데 지금은 안 나요."
+            ),
+            "gas_report_with_unrelated_current_denial": (
+                "가스 냄새가 나는데 경보음이 났고 지금은 안 나요."
+            ),
         }.get(case, "보일러 있는 곳에서 가스 냄새가 나요. 어떻게 하죠?")
     if case == "gas_report_followed_by_photo":
         req.messages.append(
@@ -315,6 +323,7 @@ def test_urgent_handoff_never_waits_for_photo(monkeypatch, case):
         "“온수도 안 나오고 가스 냄새가 나요.”라는 예문이에요.",
         "온수도 안 나오고 가스 냄새가 나서 확인했는데 지금은 안 나요.",
         "온수도 안 나오고 가스 냄새가 나서 확인했는데, 지금은 안 나요.",
+        "가스 냄새가 나요, 경보음이 났는데 지금은 가스 냄새가 안 나요.",
     ],
 )
 def test_non_reports_do_not_force_gas_handoff(text):
