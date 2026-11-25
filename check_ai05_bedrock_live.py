@@ -1,7 +1,7 @@
 """AI-05 실제 Bedrock 검증. 합성 문자만 전송하며 Spring·Dev에는 접속하지 않는다.
 
 각 사례는 새 Python 프로세스의 실제 FastAPI/SDK 경로를 사용한다.
-최대 8회의 정상 모델 호출과 1회의 잘못된 모델 ID 오류 요청을 실행한다. 자동 재시도는 없다.
+최대 12회의 정상 모델 호출과 1회의 잘못된 모델 ID 오류 요청을 실행한다. 자동 재시도는 없다.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def make_cases() -> list[dict[str, Any]]:
     add("normal", "CHECK_SCHEDULE")
     add(
         "unprovided",
-        "UNSERVICEABLE",
+        "ESCALATE_TO_OWNER",
         business={"activeWorkCategories": ["INSPECTION"], "autoBookingEnabled": True},
     )
     add(
@@ -71,6 +71,43 @@ def make_cases() -> list[dict[str, Any]]:
         "ESCALATE_TO_OWNER",
         business={"activeWorkCategories": ["REPAIR"], "autoBookingEnabled": False},
     )
+    for name, text, category, action in [
+        (
+            "part_replacement",
+            "보일러 난방이 안 돼요. 밸브를 교체해 주세요.",
+            "REPAIR",
+            "CHECK_SCHEDULE",
+        ),
+        (
+            "leak_repair",
+            "보일러 배관에서 물이 새요. 누수 수리를 부탁드려요.",
+            "LEAK",
+            "CHECK_SCHEDULE",
+        ),
+        (
+            "boiler_replacement",
+            "온수가 안 나와서 보일러 본체 전체를 교체하고 싶어요.",
+            "REPLACEMENT",
+            "CHECK_SCHEDULE",
+        ),
+        (
+            "replacement_unclear",
+            "난방이 안 돼요. 교체를 원해요.",
+            None,
+            "ASK_MORE_INFO",
+        ),
+    ]:
+        case = add(
+            name,
+            action,
+            messages=[{**request["messages"][0], "content": text}],
+            business={
+                "activeWorkCategories": ["REPAIR", "LEAK", "REPLACEMENT"],
+                "autoBookingEnabled": True,
+            },
+        )
+        case["expectedCategory"] = category
+        case["expectedCategoryStatus"] = "CONFIRMED" if category else "UNCONFIRMED"
     add(
         "reference_unknown",
         "CHECK_SCHEDULE",
@@ -186,6 +223,20 @@ def check_response(case: dict, response: dict, model: str) -> dict[str, bool]:
         checks["required_target"] = result.nextAction.targetFieldKeys == ["symptom"]
     if case["name"] in {"safety_negated", "saved_safety", "gas_report"}:
         checks["safety_flag"] = result.safety.flag == (case["name"] != "safety_negated")
+    if "expectedCategoryStatus" in case:
+        expected_status = case["expectedCategoryStatus"]
+        expected_value = case["expectedCategory"]
+        checks["category"] = result.workCategory.status == expected_status and (
+            expected_value is None or result.workCategory.value == expected_value
+        )
+        # 서버 보정으로 안전해졌더라도 프롬프트가 원시 분류를 틀렸으면 별도로 실패시킨다.
+        outputs = response.get("modelOutputs", [])
+        raw = outputs[-1].get("workCategory", {}) if outputs else {}
+        checks["model_category"] = raw.get("status") == expected_status and (
+            expected_value is None or raw.get("value") == expected_value
+        )
+    if case["name"] == "replacement_unclear":
+        checks["category_question"] = result.nextAction.targetFieldKeys == ["work_category"]
     return checks
 
 
@@ -295,6 +346,8 @@ def main() -> int:
                 "app/intake/context.py",
                 "app/intake/providers.py",
                 "app/intake/bedrock_provider.py",
+                "app/intake/work_category_rules.py",
+                "app/intake/symptom_rules.py",
                 "app/api/inquiries.py",
                 "rules/inquiry_types.yaml",
             )

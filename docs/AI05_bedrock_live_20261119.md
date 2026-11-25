@@ -5,6 +5,8 @@
 현재 도구는 13개 사례를 사용하며 OWNER 사례의 고객 문장도 변경했다. 기존 JSON·통과 결과는
 수정하지 않았으며 현재 `intake-ai05-v3`의 실호출 완료를 의미하지 않는다.
 최신 구현 범위는 [AI05_routing_safety.md](AI05_routing_safety.md)를 따른다.
+11월 25일에는 PR 피드백을 반영한 `intake-ai05-v5`·`rules-ai05-v3`으로 17개를 실호출해 모두 통과했다.
+그 결과와 초기 실패 기록은 위 최신 문서의 11/25 검증 절에 별도로 보존했다.
 
 관련 기능: C-09·C-10·B-15·B-16. 기준 문서는 `기능 명세서.csv`(UTF-8-SIG),
 API 명세 6.2~6.4, [AI05_routing_safety.md](AI05_routing_safety.md)다.

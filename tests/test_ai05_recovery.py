@@ -117,7 +117,7 @@ def test_resumed_ai_uses_owner_confirmation_and_latest_customer_message():
     db.handler_mode = "OWNER"
     db.input_version += 1
     old_request = db.make_request()
-    db.add_customer_message("확인한 증상에 대해 수리 대신 교체를 원해요")
+    db.add_customer_message("확인한 증상에 대해 수리 대신 보일러 본체를 교체하고 싶어요")
     db.handler_mode = "AI"
     db.input_version += 1
     req = db.make_request()
@@ -129,7 +129,7 @@ def test_resumed_ai_uses_owner_confirmation_and_latest_customer_message():
     assert req.inputVersion > old_request.inputVersion
     assert db.apply_result(result) == "APPLIED"
     assert db.fields["symptom"].source == "OWNER"
-    assert req.messages[-1].content == "확인한 증상에 대해 수리 대신 교체를 원해요"
+    assert req.messages[-1].content == "확인한 증상에 대해 수리 대신 보일러 본체를 교체하고 싶어요"
 
 
 def test_restored_safety_state_skips_model_and_prevents_booking():

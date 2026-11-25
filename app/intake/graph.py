@@ -41,6 +41,7 @@ from app.intake.intent_rules import intent_evidence_supports, normalize_customer
 from app.intake.providers import AsyncExtractionProvider, ExtractionProvider
 from app.intake.rules import IntakeRules
 from app.intake.symptom_rules import GAS_LEAK_REASON, is_specific_symptom, reports_possible_gas_leak
+from app.intake.work_category_rules import normalize_work_category
 
 
 class IntakeState(TypedDict, total=False):
@@ -146,7 +147,7 @@ def build_workflow(
                 intent, raw.intentEvidence, latest.content, latest.messageId
             )
             else None,
-            "workCategory": raw.workCategory,
+            "workCategory": normalize_work_category(raw.workCategory, state["request"].messages),
             "safety": Safety(
                 flag=state["request"].safetyFlag or raw.safety.flag or gas_report,
                 reasons=safety_reasons,
@@ -457,7 +458,7 @@ def build_workflow(
         req = state["request"]
         effective = effective_fields(state)
         category = state["workCategory"]
-        # 안전·직접 상담은 check_rules에서 먼저 처리한다. 미제공 작업에는 수집을 계속하지 않는다.
+        # 모델 오분류만으로 상담을 닫지 않는다. Spring의 OWNER_CHECK·알림 경로로 연결한다.
         if (
             category.status == "CONFIRMED"
             and category.value is not None
@@ -466,10 +467,10 @@ def build_workflow(
             return {
                 "stage": "DECIDE",
                 "nextAction": NextAction(
-                    action="UNSERVICEABLE",
+                    action="ESCALATE_TO_OWNER",
                     ruleReason="DONE",
                     targetFieldKeys=[],
-                    reason="확인된 작업 유형이 업체의 현재 제공 작업 목록에 없음",
+                    reason="추출된 작업 유형과 업체 제공 범위에 대한 사장님 확인 필요",
                 ),
             }
         required = rules.required_fields(category.value)
@@ -601,9 +602,16 @@ def build_workflow(
         }
         if action.action == "ASK_MORE_INFO":
             if target == "work_category":
-                content = "어떤 작업을 원하시는지 알려주실 수 있을까요? (점검·수리·누수·교체 등)"
+                content = (
+                    "어떤 작업을 원하시는지 알려주실 수 있을까요? "
+                    "교체라면 부품 교체인지 보일러 본체 전체 교체인지도 알려주세요."
+                )
             elif target == "symptom":
-                content = "난방·온수·전원 중 어떤 부분이 작동하지 않는지 알려주실 수 있을까요?"
+                content = (
+                    "어디에서 물이 새는지 등 누수 증상을 알려주실 수 있을까요?"
+                    if state["workCategory"].value == "LEAK"
+                    else "난방·온수·전원 중 어떤 부분이 작동하지 않는지 알려주실 수 있을까요?"
+                )
             elif target:
                 content = f"{labels.get(target, target)}을(를) 확인해 주실 수 있을까요?"
             else:

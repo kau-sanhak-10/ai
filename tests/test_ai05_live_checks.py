@@ -68,8 +68,8 @@ def test_changed_input_version_cannot_pass():
 
 def test_cases_have_bounded_calls_and_same_restart_snapshot():
     cases = make_cases()
-    assert len(cases) == 13
-    assert sum(c["calls"] for c in cases if not c.get("invalidModel")) == 8
+    assert len(cases) == 17
+    assert sum(c["calls"] for c in cases if not c.get("invalidModel")) == 12
     first = next(c for c in cases if c["name"] == "owner_resume")
     repeated = next(c for c in cases if c["name"] == "owner_restart")
     assert first["request"] == repeated["request"]
@@ -112,3 +112,13 @@ def test_preflight_closes_sdk_client_without_requiring_context_manager(tmp_path,
         assert main() == 0
     sts.get_caller_identity.assert_called_once_with()
     sts.close.assert_called_once_with()
+
+
+def test_runtime_category_correction_does_not_hide_wrong_raw_model_category():
+    case = next(c for c in make_cases() if c["name"] == "part_replacement")
+    _, response = sample()
+    response["body"]["result"]["requestId"] = case["request"]["requestId"]
+    response["modelOutputs"] = [{"workCategory": {"value": "REPLACEMENT", "status": "CONFIRMED"}}]
+    checks = check_response(case, response, "live-test-model")
+    assert checks["category"] is True
+    assert checks["model_category"] is False
