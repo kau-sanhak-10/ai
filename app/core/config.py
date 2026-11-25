@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     openai_api_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None
-    jev_api_key: SecretStr | None = None
 
     # Spring → AI 전용 내부 접근 키. 프로덕션에서 반드시 설정.
     internal_key: SecretStr | None = None

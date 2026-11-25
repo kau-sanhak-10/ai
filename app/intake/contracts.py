@@ -210,7 +210,7 @@ class AnalyzeResult(ContractModel):
     inputVersion: int
     ruleVersion: str
     promptVersion: str
-    decidedBy: Literal["RULE", "EXTERNAL_API", "SELF_MODEL", "JEV"]
+    decidedBy: Literal["RULE", "EXTERNAL_API", "SELF_MODEL"]
     modelName: str
     usage: Usage
     facts: list[Fact]

@@ -44,7 +44,8 @@ macOS·Linux는 `curl -LsSf https://astral.sh/uv/install.sh | sh`로 설치하�
 | AI 서버(여기) | http://localhost:8000 |
 
 - AI 서버는 Spring Boot 백엔드만 호출합니다. 프론트엔드가 직접 호출하지 않습니다.
-- LLM·Vision·Jev 키는 이 서버의 `.env`에만 둡니다. 프론트·백엔드 환경변수에 넣지 않습니다.
+- 고객 문의는 Bedrock 텍스트 모델과 LangGraph 규칙으로 처리합니다. 로컬에서는 AWS 프로필, 배포에서는 IAM 역할로 인증합니다.
+- 사진 분석은 AI 서버에서 YOLO·OCR로 처리합니다. 기존 제공사 API 키는 비교 실험에만 사용합니다.
 - 응답은 `ApiResponse.ok(result)`로 감싸 백엔드 `ApiResponse`와 같은 형식을 씁니다.
 - 오류는 `raise BusinessException(ErrorCode.XXX)`로 던집니다. 공통 코드 이름·메시지는 백엔드 `CommonErrorCode`와 같습니다. AI 전용 코드는 `ErrorCode`에 추가합니다.
 - 입력 검증 실패는 `INVALID_INPUT`과 함께 `result`에 `[{field, reason}]` 목록을 돌려줍니다.

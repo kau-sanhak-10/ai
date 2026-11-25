@@ -76,6 +76,13 @@ def test_internal_contract_round_trip_with_mock(monkeypatch):
     assert parsed.requestId == "r-1"
 
 
+def test_retired_decision_source_is_rejected():
+    result = run(payload(), FakeProvider(text_facts=[symptom()])).model_dump()
+    result["decidedBy"] = "JEV"
+    with pytest.raises(ValidationError, match="decidedBy"):
+        AnalyzeResult.model_validate(result)
+
+
 def test_invalid_input_rejected_as_field_errors(monkeypatch):
     monkeypatch.setenv("INTERNAL_KEY", "only-backend-knows")
     get_settings.cache_clear()
