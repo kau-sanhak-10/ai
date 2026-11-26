@@ -101,6 +101,34 @@ def effective_fields(state: IntakeState) -> dict[str, str]:
     return result
 
 
+def validate_schedule_handoff(
+    request: AnalyzeRequest, result: AnalyzeResult, rules: IntakeRules
+) -> None:
+    """반환 직전 현재 요청의 예약 진입 조건을 확인한다. DB 최신성은 Spring이 검사한다."""
+    if result.nextAction.action != "CHECK_SCHEDULE":
+        return
+    if request.handlerMode != "AI":
+        raise ValueError("사장님 응대 중에는 자동 예약 연결 불가")
+    if request.safetyFlag:
+        raise ValueError("저장된 안전 미해결 시 자동 예약 연결 불가")
+    if not request.business.autoBookingEnabled:
+        raise ValueError("자동 예약 비활성화 시 자동 예약 연결 불가")
+    if result.workCategory.value not in request.business.activeWorkCategories:
+        raise ValueError("업체가 제공하지 않는 작업은 자동 예약 연결 불가")
+    required = rules.required_fields(result.workCategory.value)
+    effective = effective_fields(
+        {"request": request, "facts": result.facts, "conflicts": result.conflicts}
+    )
+    if any(not effective.get(key) for key in required):
+        raise ValueError("필수정보 확인 전 자동 예약 연결 불가")
+    # 10/26 기준: 참고정보 충돌만 남은 경우 진행하며 Spring이 업무 조건을 최종 검사한다.
+    if any(
+        conflict.fieldKey in required or conflict.fieldKey not in rules.referenceFields
+        for conflict in result.conflicts
+    ):
+        raise ValueError("필수정보 충돌 해결 전 자동 예약 연결 불가")
+
+
 def build_workflow(
     provider: ExtractionProvider,
     rules: IntakeRules,
@@ -716,18 +744,6 @@ def build_workflow(
                     and candidate.evidence.photoId not in valid_photos
                 ):
                     raise ValueError("다른 문의의 사진 근거를 반환할 수 없습니다")
-        if state["safety"].flag and state["nextAction"].action == "CHECK_SCHEDULE":
-            raise ValueError("안전 미해결 시 자동 예약 연결 불가")
-        # 10/26 확정 기준: 필수정보 또는 미분류 항목의 충돌만 예약 진입 차단.
-        # 참고정보 충돌은 상태를 UNCONFIRMED로 전달하고 Spring에서 최종 검증한다.
-        required = rules.required_fields(state["workCategory"].value)
-        blocking_conflicts = [
-            conflict.fieldKey
-            for conflict in state["conflicts"]
-            if conflict.fieldKey in required or conflict.fieldKey not in rules.referenceFields
-        ]
-        if blocking_conflicts and state["nextAction"].action == "CHECK_SCHEDULE":
-            raise ValueError("필수정보 충돌 해결 전 자동 예약 연결 불가")
         # 단순 참고 항목 미확인으로 사장님 알림·이관을 생성하면 안 된다.
         output = AnalyzeResult(
             requestId=req.requestId,
@@ -754,6 +770,7 @@ def build_workflow(
             nextAction=state["nextAction"],
             reply=state["reply"],
         )
+        validate_schedule_handoff(req, output, rules)
         return {"stage": "SUMMARY", "result": output}
 
     graph = StateGraph(IntakeState)
