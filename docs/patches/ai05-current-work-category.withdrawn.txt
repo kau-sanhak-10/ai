@@ -1,0 +1,47 @@
+보류된 API 확장 제안 · 2026-11-20
+
+아래 내용은 당시 검토한 패치의 보존본이다. 원래 API 계약에 포함되지 않으며
+현재 AI 실행 코드에서도 제거했다. 이번 WBS의 필수 수정이나 배포 대상이 아니다.
+연동 불일치를 확인하고 팀과 API 변경을 합의하기 전에는 적용하지 않는다.
+
+--- a/src/main/java/com/ilro/backend/infra/ai/AnalyzeRequest.java
++++ b/src/main/java/com/ilro/backend/infra/ai/AnalyzeRequest.java
+@@ -18,14 +18,24 @@
+                              HandlerMode handlerMode, Business business, List<Field> fields,
+                              Map<String, Integer> askCounts, List<MessageItem> messages, List<PhotoItem> photos,
+                              boolean safetyFlag,
+-                             @JsonInclude(JsonInclude.Include.NON_EMPTY) List<Long> processedPhotoIds) {
++                             @JsonInclude(JsonInclude.Include.NON_EMPTY) List<Long> processedPhotoIds,
++                             @JsonInclude(JsonInclude.Include.NON_NULL) WorkCategory currentWorkCategory) {
++
++    // 기존 호출부는 작업 유형 없이 생성하고 최신 DB 값은 확장 생성자로 전달한다.
++    public AnalyzeRequest(String requestId, Long inquiryId, Long ownerId, long inputVersion,
++                          HandlerMode handlerMode, Business business, List<Field> fields,
++                          Map<String, Integer> askCounts, List<MessageItem> messages, List<PhotoItem> photos,
++                          boolean safetyFlag, List<Long> processedPhotoIds) {
++        this(requestId, inquiryId, ownerId, inputVersion, handlerMode, business, fields, askCounts,
++                messages, photos, safetyFlag, processedPhotoIds, null);
++    }
+
+     // DB 기록(input_snapshot)용 - 사진 주소에는 임시 자격 증명이 들어 있어 비우고 사진·메시지 번호만 남김
+     public AnalyzeRequest withoutImageUrls() {
+         return new AnalyzeRequest(requestId, inquiryId, ownerId, inputVersion, handlerMode, business, fields,
+                 askCounts, messages,
+                 photos.stream().map(photo -> new PhotoItem(photo.photoId(), photo.messageId(), null)).toList(),
+-                safetyFlag, processedPhotoIds);
++                safetyFlag, processedPhotoIds, currentWorkCategory);
+     }
+
+     public record Business(List<WorkCategory> activeWorkCategories, boolean autoBookingEnabled) {
+--- a/src/main/java/com/ilro/backend/domain/ai/service/AiAnalysisStore.java
++++ b/src/main/java/com/ilro/backend/domain/ai/service/AiAnalysisStore.java
+@@ -144,7 +144,8 @@
+                 .filter(id -> completedPhotos.contains(id.toString())).toList();
+         AnalyzeRequest request = new AnalyzeRequest(requestId, inquiryId, inquiry.getOwner().getId(), inputVersion,
+                 HandlerMode.AI, business(inquiry.getOwner()), fields(inquiryId), askCounts(inquiryId),
+-                messages, photos, inquiry.isSafetyFlag(), processedPhotoIds);
++                messages, photos, inquiry.isSafetyFlag(), processedPhotoIds,
++                inquiry.getWorkType() == null ? null : inquiry.getWorkType().getWorkCategory());
+         // DB 기록에는 사진 주소를 빼고 남김 (임시 자격 증명 포함)
+         return Optional.of(new Snapshot(request, jsonMapper.writeValueAsString(request.withoutImageUrls()),
+                 lastCustomer.getId(), failures.size()));

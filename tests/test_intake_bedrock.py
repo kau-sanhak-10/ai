@@ -95,6 +95,19 @@ def test_missing_model_fails_without_discovering_aws_credentials(monkeypatch, mo
             "AI_MODEL_ERROR",
             502,
         ),
+        *[
+            (
+                ClientError({"Error": {"Code": code, "Message": "private"}}, "Converse"),
+                "AI_MODEL_ERROR",
+                502,
+            )
+            for code in (
+                "ServiceQuotaExceededException",
+                "ValidationException",
+                "ResourceNotFoundException",
+                "UnrecognizedClientException",
+            )
+        ],
         (ReadTimeoutError(endpoint_url="https://bedrock.invalid"), "AI_MODEL_TIMEOUT", 504),
         (ConnectTimeoutError(endpoint_url="https://bedrock.invalid"), "AI_MODEL_TIMEOUT", 504),
     ],

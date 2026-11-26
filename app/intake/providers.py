@@ -29,15 +29,33 @@ from app.intake.contracts import (
 TEXT_INSTRUCTIONS = """당신은 보일러 출장 문의의 정보 추출기입니다.
 고객의 발화에서 실제로 언급된 제조사, 보일러 본체 모델, 오류코드, 증상, 보일러 종류만 추출합니다.
 상담 텍스트에 명시된 짧은 원문만 observedText에 사용하고, 추측한 값은 반환하지 마세요.
+value는 의미를 유지해 정리할 수 있지만 observedText는 원문에서 복사하세요.
+observedText의 조사·문장 어미를 바꾸지 마세요.
+고객이 증상을 명시했다면 의도나 작업 유형과 별개로 values에 포함하세요.
+작업 요청만 분류하고 증상을 누락하지 마세요.
+누수·물샘·소음도 증상입니다. LEAK로 분류했더라도 고객이 말한 물샘 현상을 symptom에 포함하세요.
+예를 들어 "물이 새요"는 관측된 증상이며 symptom의 값과 observedText로 추출할 수 있습니다.
 고객의 '안 된다'는 말을 전원·온수·난방의 특정 고장으로 확정하지 마세요.
 난방·온수 등 실제 상태가 불명확하면 원문 증상 그대로 두세요.
-작업 유형은 고객이 명시적으로 점검·수리·누수·교체를 설명한 경우에만 CONFIRMED로 표시합니다.
+작업 유형은 고객이 명시적으로 요청한 작업과 대상을 함께 확인해 분류합니다.
+INSPECTION은 점검, REPAIR는 수리·부품 교체, LEAK는 누수 수리, REPLACEMENT는 보일러 본체 교체입니다.
+CONFIRMED는 고객이 원하는 작업 종류가 확인되었다는 뜻입니다.
+고장 원인·진단·시공 가능성이 확정되었다는 뜻이 아닙니다.
+"수리를 받고 싶어요", "수리받고 싶어요"처럼 수리를 명시적으로 요청하면 REPAIR/CONFIRMED입니다.
+밸브·펌프·센서·조절기·배관 등 부품 교체는 REPAIR입니다.
+교체라는 단어만 보고 REPLACEMENT로 쓰지 마세요.
+"보일러 본체를 교체하고 싶어요"처럼 보일러 전체 교체를 명시했을 때만 REPLACEMENT/CONFIRMED입니다.
+"교체를 원해요"처럼 대상이 불명확하고 이전 고객 대화에도 대상 근거가 없으면 UNCONFIRMED로 두세요.
+"배관에서 물이 새서 누수 수리를 원해요"처럼 누수 처리를 명시적으로 요청하면 LEAK/CONFIRMED입니다.
 고객이 직접 상담을 요청하면 ASK_OWNER, 회신을 요청하면 CALLBACK, 예약을 원하면 BOOK,
 질문에 답변하거나 정보를 제공하면 ANSWER, 그 외는 OTHER입니다.
 ASK_OWNER/CALLBACK이면 최신 고객 메시지의 실제 요청 문구를 intentEvidence에 반환하세요.
 intentEvidence.messageId는 해당 최신 메시지 ID, observedText는 원문 그대로의 요청 문구입니다.
 "전화 좀 주실 수 있나요"는 CALLBACK, "사장님 바꿔주세요"는 ASK_OWNER입니다.
 일반 고장 설명, 과거 통화 언급, 연락 거절은 연결 요청이 아닙니다.
+수리·교체 요청 자체는 ASK_OWNER가 아닙니다.
+작업 유형 정정은 이전 고객 요청보다 최신 고객의 명시적 대상·요청을 우선하세요.
+별도의 직접 연결·회신 요청이 있을 때만 ASK_OWNER/CALLBACK을 선택하세요.
 근거가 없거나 그 외 의도이면 intentEvidence는 null로 반환하세요.
 안전 신호는 실제 고객 표현에 근거가 있을 때만 표시하며,
 위험 상황일 수 있으면 사람 확인이 필요합니다.
@@ -51,6 +69,9 @@ messageId는 그 고객 메시지 ID로 반환하세요. 애매하면 특정 고
 "난방이 아니라 온수예요" 같은 명시적인 정정은 isCorrection=true로 표시하고,
 이전 설명을 철회하지 않은 추가 증상이나 서로 다른 사진 정보는 정정으로 표시하지 마세요.
 고객이 모른다고 답한 항목은 value=null, observedText=고객 원문, unsure=true로 반환하세요.
+unsure=true는 고객이 모른다고 직접 말한 그 항목에만 사용하세요.
+다른 항목까지 미확인으로 바꾸지 마세요.
+fields에만 있고 새 고객 발화에서 언급하지 않은 항목은 values에 다시 만들지 마세요.
 이미 확인한 항목은 유지하고 아직 부족한 항목만 확인합니다. OWNER 현재값은 바꾸지 마세요.
 """
 IMAGE_INSTRUCTIONS = """당신은 보일러 제품 사진의 문자 정보 추출기입니다.
@@ -67,11 +88,15 @@ class ExtractedValue(BaseModel):
 
     fieldKey: FieldKey
     value: str | None
-    observedText: str | None = None
+    observedText: str | None = Field(
+        default=None, description="실제 관측 원문에서 그대로 복사한 근거. 조사·어미를 고치지 않음"
+    )
     unreadable: bool = False
     messageId: int | None = Field(default=None, gt=0)
     isCorrection: bool = False
-    unsure: bool = False
+    unsure: bool = Field(
+        default=False, description="고객이 이 항목을 모른다고 명시한 경우에만 true"
+    )
 
 
 class ModelOutput(BaseModel):

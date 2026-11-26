@@ -41,6 +41,7 @@ from app.intake.intent_rules import intent_evidence_supports, normalize_customer
 from app.intake.providers import AsyncExtractionProvider, ExtractionProvider
 from app.intake.rules import IntakeRules
 from app.intake.symptom_rules import GAS_LEAK_REASON, is_specific_symptom, reports_possible_gas_leak
+from app.intake.work_category_rules import normalize_work_category
 
 
 class IntakeState(TypedDict, total=False):
@@ -77,7 +78,11 @@ def effective_fields(state: IntakeState) -> dict[str, str]:
         for field in state["request"].fields
         if field.status == "CONFIRMED"
         and field.value is not None
-        and (field.fieldKey != "symptom" or is_specific_symptom(field.value))
+        and (
+            field.fieldKey != "symptom"
+            or field.source == "OWNER"
+            or is_specific_symptom(field.value)
+        )
     }
     owners = {f.fieldKey for f in state["request"].fields if f.source == "OWNER"}
     conflicted = {conflict.fieldKey for conflict in state.get("conflicts", [])}
@@ -142,7 +147,7 @@ def build_workflow(
                 intent, raw.intentEvidence, latest.content, latest.messageId
             )
             else None,
-            "workCategory": raw.workCategory,
+            "workCategory": normalize_work_category(raw.workCategory, state["request"].messages),
             "safety": Safety(
                 flag=state["request"].safetyFlag or raw.safety.flag or gas_report,
                 reasons=safety_reasons,
@@ -453,6 +458,21 @@ def build_workflow(
         req = state["request"]
         effective = effective_fields(state)
         category = state["workCategory"]
+        # 모델 오분류만으로 상담을 닫지 않는다. Spring의 OWNER_CHECK·알림 경로로 연결한다.
+        if (
+            category.status == "CONFIRMED"
+            and category.value is not None
+            and category.value not in req.business.activeWorkCategories
+        ):
+            return {
+                "stage": "DECIDE",
+                "nextAction": NextAction(
+                    action="ESCALATE_TO_OWNER",
+                    ruleReason="DONE",
+                    targetFieldKeys=[],
+                    reason="추출된 작업 유형과 업체 제공 범위에 대한 사장님 확인 필요",
+                ),
+            }
         required = rules.required_fields(category.value)
         conflicted = {v.fieldKey for v in state.get("conflicts", [])}
         missing = sorted(f for f in required if not effective.get(f))
@@ -529,17 +549,14 @@ def build_workflow(
                     reason="작업 유형을 대화로 확인할 필요가 있음",
                 ),
             }
-        if (
-            category.value not in req.business.activeWorkCategories
-            or not req.business.autoBookingEnabled
-        ):
+        if not req.business.autoBookingEnabled:
             return {
                 "stage": "DECIDE",
                 "nextAction": NextAction(
                     action="ESCALATE_TO_OWNER",
                     ruleReason="DONE",
                     targetFieldKeys=[],
-                    reason="업체의 자동 예약 설정 또는 제공 작업 유형 확인 필요",
+                    reason="업체의 자동 예약이 비활성화되어 사장님 확인 필요",
                 ),
             }
         return {
@@ -585,9 +602,16 @@ def build_workflow(
         }
         if action.action == "ASK_MORE_INFO":
             if target == "work_category":
-                content = "어떤 작업을 원하시는지 알려주실 수 있을까요? (점검·수리·누수·교체 등)"
+                content = (
+                    "어떤 작업을 원하시는지 알려주실 수 있을까요? "
+                    "교체라면 부품 교체인지 보일러 본체 전체 교체인지도 알려주세요."
+                )
             elif target == "symptom":
-                content = "난방·온수·전원 중 어떤 부분이 작동하지 않는지 알려주실 수 있을까요?"
+                content = (
+                    "어디에서 물이 새는지 등 누수 증상을 알려주실 수 있을까요?"
+                    if state["workCategory"].value == "LEAK"
+                    else "난방·온수·전원 중 어떤 부분이 작동하지 않는지 알려주실 수 있을까요?"
+                )
             elif target:
                 content = f"{labels.get(target, target)}을(를) 확인해 주실 수 있을까요?"
             else:
@@ -605,7 +629,7 @@ def build_workflow(
             else:
                 content = "사장님 확인이 필요한 내용입니다. 화면의 상담 연결 절차로 진행해 주세요."
         elif action.action == "UNSERVICEABLE":
-            content = "업체에서 제공하는 작업인지 확인이 필요합니다."
+            content = "요청하신 작업은 현재 이 업체에서 제공하지 않아 접수를 진행하기 어렵습니다."
         elif action.action == "ANSWER_SIDE_QUESTION":
             hits = state.get("manualHits", [])
             if hits:
