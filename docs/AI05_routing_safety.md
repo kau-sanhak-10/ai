@@ -280,7 +280,7 @@ Git 인덱스의 파일만 `artifacts/ai05-pr-review-20261123/`에 추출해 독
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --tb=short -o faulthandler_timeout=60 --basetemp=artifacts/ai05-review-20261125-final-full
-.\.venv\Scripts\python.exe -X utf8 check_ai05_bedrock_live.py --profile ilro-dev --expected-account 726228202300
+.\.venv\Scripts\python.exe -X utf8 check_ai05_bedrock_live.py --profile ilro-dev --expected-account "<ACCOUNT_ID>"
 .\.venv\Scripts\ruff.exe check app tests check_ai05_bedrock_live.py simulate_ilro_multiturn.py
 .\.venv\Scripts\ruff.exe format --check app tests check_ai05_bedrock_live.py simulate_ilro_multiturn.py
 git diff --check

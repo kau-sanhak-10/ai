@@ -99,7 +99,7 @@ REPAIR라는 후보 값만 있다는 이유로 CONFIRMED로 승격하지 않는 
 당시 실제 실행한 최종 명령(현재 도구로 다시 실행하면 변경된 13개 사례를 검증함):
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 check_ai05_bedrock_live.py --profile ilro-dev --expected-account 726228202300
+.\.venv\Scripts\python.exe -X utf8 check_ai05_bedrock_live.py --profile ilro-dev --expected-account "<ACCOUNT_ID>"
 .\.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --tb=short --basetemp=artifacts/ai05-bedrock-live-full-tmp
 .\.venv\Scripts\ruff.exe check
 .\.venv\Scripts\ruff.exe format --check
