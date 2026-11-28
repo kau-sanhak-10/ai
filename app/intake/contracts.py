@@ -233,6 +233,20 @@ class AnalyzeResult(ContractModel):
     reply: Reply
     confidence: float | None = Field(default=None, ge=0, le=1)
 
+    @model_validator(mode="after")
+    def validate_schedule_action(self):
+        if self.nextAction.action != "CHECK_SCHEDULE":
+            return self
+        if self.safety.flag:
+            raise ValueError("안전 미해결 시 자동 예약 연결 불가")
+        if self.intent in {"ASK_OWNER", "CALLBACK"}:
+            raise ValueError("고객이 사람 응대를 요청한 경우 자동 예약 연결 불가")
+        if self.workCategory.status != "CONFIRMED" or self.workCategory.value is None:
+            raise ValueError("작업 유형 확인 전 자동 예약 연결 불가")
+        if self.nextAction.targetFieldKeys:
+            raise ValueError("추가 확인 항목이 남아 있으면 자동 예약 연결 불가")
+        return self
+
 
 class RawObservation(ContractModel):
     """LLM/VLM이 제안한 후보. 서버 저장값과 비교하기 전까지는 확정 사실이 아니다."""

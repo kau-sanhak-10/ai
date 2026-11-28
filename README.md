@@ -93,3 +93,6 @@ uv run pytest           # 테스트
 
 Dev 연동과 사진 분석 설정은 [Dev 점검 절차](docs/dev_intake_check.md)와
 [사진 분석 안내](docs/photo_intake.md)를 참고하세요.
+
+AI-13의 예약 진입 조건·프론트 조회/확정 연결·중복 및 오래된 상태 처리와 검증 범위는
+[예약 연결 안내](docs/AI13_booking_handoff.md)를 참고하세요.
